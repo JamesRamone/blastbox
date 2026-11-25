@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Deploy Blastbox Controller Agent + Public Dashboard onto Controller Sprite.
 
-Pushes the controller scripts, public web console, sanitized `history.json`, and
-the standalone static `sprite` CLI binary into Sprite `blastbox`, registers
-`blastbox-web` (port 8080, `--url-auth public`) and `blastbox-agent` (autonomous
-PR-watching daemon), ensures the `hacksgiving` label is active on the
-controller, and verifies `/health` and `/` return HTTP 200.
+Deploys the controller scripts, public web console, optional `.env`, sanitized
+history, and the standalone static `sprite` CLI binary into the Controller
+Sprite, auto-creating the Sprite if absent, registering `blastbox-web` (port 8080,
+`--url-auth public`) and `blastbox-agent`, ensuring `config.CONTROLLER_LABEL` is
+set on the controller, and verifying `/health` and `/` return HTTP 200.
 """
 
 from __future__ import annotations
@@ -33,6 +33,22 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
     return proc
 
 
+def _sprite_exists(sprite: str) -> bool:
+    proc = subprocess.run([config.SPRITE_BIN, "info", sprite], capture_output=True, text=True, check=False)
+    return proc.returncode == 0
+
+
+def _validate_dotenv_has_no_secrets(env_path: Path) -> None:
+    text = env_path.read_text(encoding="utf-8", errors="replace")
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key = line.split("=", 1)[0].strip()
+        if key in config.FORBIDDEN_ENV_VARS:
+            raise RuntimeError(f"SECURITY FAILURE: Forbidden raw secret key {key!r} found in {env_path}")
+
+
 def setup_controller(
     *,
     controller_sprite: str = config.CONTROLLER_SPRITE,
@@ -41,6 +57,10 @@ def setup_controller(
     public_url: str = config.PUBLIC_URL,
     create_checkpoint: bool = False,
 ) -> dict[str, Any]:
+    if not _sprite_exists(controller_sprite):
+        print(f"[init-controller] Creating controller Sprite '{controller_sprite}'...", flush=True)
+        _run([config.SPRITE_BIN, "create", "--skip-console", controller_sprite], check=True)
+
     # Ensure controller Sprite carries the Connector label and public URL auth
     _run(
         [
@@ -56,12 +76,13 @@ def setup_controller(
         ],
         check=True,
     )
+    resolved_public_url = public_url or config.detect_sprite_url(controller_sprite)
 
     # Deploy public dashboard service first
     dash_res = init_dashboard.setup_dashboard(
         sprite=controller_sprite,
         history_path=history_path,
-        public_url=public_url,
+        public_url=resolved_public_url,
         create_checkpoint=False,
     )
 
@@ -83,6 +104,7 @@ def setup_controller(
 
     agent_files = [
         ("config.py", "config.py"),
+        ("url_guard.py", "url_guard.py"),
         ("agent_planner.py", "agent_planner.py"),
         ("blastbox.py", "blastbox.py"),
         ("extract_iocs.py", "extract_iocs.py"),
@@ -105,6 +127,23 @@ def setup_controller(
                 "-p",
                 str(src),
                 f"/home/sprite/blastbox-agent/{dst_name}",
+            ],
+            check=True,
+        )
+
+    dotenv_local = SCRIPT_DIR / ".env"
+    if dotenv_local.is_file():
+        _validate_dotenv_has_no_secrets(dotenv_local)
+        _run(
+            [
+                config.SPRITE_BIN,
+                "file",
+                "push",
+                "-s",
+                controller_sprite,
+                "-p",
+                str(dotenv_local),
+                "/home/sprite/blastbox-agent/.env",
             ],
             check=True,
         )

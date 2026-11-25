@@ -48,37 +48,66 @@ def resolve_sprite_bin() -> str:
     return str(Path.home() / ".local" / "bin" / "sprite")
 
 
+def _env_value(name: str, default: str = "") -> str:
+    val = (os.environ.get(name) or "").strip()
+    if val.startswith("<") and val.endswith(">"):
+        return ""
+    return val or default
+
+
+def require_setting(env_name: str, value: str) -> str:
+    cleaned = (value or "").strip()
+    if not cleaned or (cleaned.startswith("<") and cleaned.endswith(">")):
+        raise RuntimeError(
+            f"Missing required Blastbox setting {env_name}. "
+            "Copy .env.example to .env and fill in your Fly.io Connector / repo values."
+        )
+    return cleaned
+
+
+def detect_sprite_url(sprite: str) -> str:
+    """Resolve `https://...` URL from `sprite info <sprite>` when configured public URL is empty."""
+    proc = shutil.which(SPRITE_BIN) or (SPRITE_BIN if Path(SPRITE_BIN).exists() else "")
+    if not proc or not sprite:
+        return ""
+    import subprocess  # local import to keep module lightweight
+
+    res = subprocess.run([proc, "info", sprite], stdin=subprocess.DEVNULL, capture_output=True, text=True, check=False)
+    if res.returncode != 0:
+        return ""
+    m = re.search(r"^\s*URL:\s*(https://\S+)", res.stdout, re.MULTILINE)
+    return m.group(1).strip() if m else ""
+
+
 SPRITE_BIN = resolve_sprite_bin()
-CONTROLLER_SPRITE = (
-    os.environ.get("BLASTBOX_CONTROLLER_SPRITE")
-    or os.environ.get("BLASTBOX_SPRITE")
-    or "blastbox"
-)
-DETONATOR_SPRITE = os.environ.get("BLASTBOX_DETONATOR_SPRITE") or "blastbox-detonator"
+CONTROLLER_SPRITE = _env_value("BLASTBOX_CONTROLLER_SPRITE") or _env_value("BLASTBOX_SPRITE") or "blastbox"
+DETONATOR_SPRITE = _env_value("BLASTBOX_DETONATOR_SPRITE") or "blastbox-detonator"
 
-GITHUB_CONNECTOR_ID = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID") or "<github-connector-id>"
-OPENROUTER_CONNECTOR_ID = os.environ.get("BLASTBOX_OPENROUTER_CONNECTOR_ID") or "<openrouter-connector-id>"
-SLACK_CONNECTOR_ID = os.environ.get("BLASTBOX_SLACK_CONNECTOR_ID") or "<slack-connector-id>"
-SLACK_PROVIDER = os.environ.get("BLASTBOX_SLACK_PROVIDER") or "slack_bot"
+GITHUB_CONNECTOR_ID = _env_value("BLASTBOX_GITHUB_CONNECTOR_ID")
+OPENROUTER_CONNECTOR_ID = _env_value("BLASTBOX_OPENROUTER_CONNECTOR_ID")
+SLACK_CONNECTOR_ID = _env_value("BLASTBOX_SLACK_CONNECTOR_ID")
+SLACK_PROVIDER = _env_value("BLASTBOX_SLACK_PROVIDER", "slack_bot")
 
-GITHUB_GATEWAY = f"https://api.sprites.dev/v1/gateway/github/{GITHUB_CONNECTOR_ID}"
-OPENROUTER_GATEWAY = f"https://api.sprites.dev/v1/gateway/openrouter/{OPENROUTER_CONNECTOR_ID}"
-SLACK_GATEWAY = f"https://api.sprites.dev/v1/gateway/{SLACK_PROVIDER}/{SLACK_CONNECTOR_ID}"
+GITHUB_GATEWAY = f"https://api.sprites.dev/v1/gateway/github/{GITHUB_CONNECTOR_ID}" if GITHUB_CONNECTOR_ID else ""
+OPENROUTER_GATEWAY = f"https://api.sprites.dev/v1/gateway/openrouter/{OPENROUTER_CONNECTOR_ID}" if OPENROUTER_CONNECTOR_ID else ""
+SLACK_GATEWAY = f"https://api.sprites.dev/v1/gateway/{SLACK_PROVIDER}/{SLACK_CONNECTOR_ID}" if SLACK_CONNECTOR_ID else ""
 
 SLACK_CHANNELS = [
     c.strip()
-    for c in (os.environ.get("BLASTBOX_SLACK_CHANNELS") or "<slack-channel-id>").split(",")
+    for c in _env_value("BLASTBOX_SLACK_CHANNELS").split(",")
     if c.strip()
 ]
-SLACK_POLL_INTERVAL_SECONDS = max(3, int(os.environ.get("BLASTBOX_SLACK_POLL_INTERVAL", "15")))
+SLACK_CHANNEL_LABEL = _env_value("BLASTBOX_SLACK_CHANNEL_LABEL", "#blastbox")
+SLACK_POLL_INTERVAL_SECONDS = max(3, int(_env_value("BLASTBOX_SLACK_POLL_INTERVAL", "15")))
 
-DEFAULT_REPO = os.environ.get("BLASTBOX_REPO") or "JamesRamone/hacksgiving-blastbox-demo"
-PUBLIC_URL = os.environ.get("BLASTBOX_PUBLIC_URL") or "https://blastbox-3xb.sprites.app"
-CONTROLLER_LABEL = os.environ.get("BLASTBOX_CONTROLLER_LABEL") or "hacksgiving"
+DEFAULT_REPO = _env_value("BLASTBOX_REPO")
+PUBLIC_URL = _env_value("BLASTBOX_PUBLIC_URL")
+CONTROLLER_LABEL = _env_value("BLASTBOX_CONTROLLER_LABEL", "blastbox")
+GOLDEN_CHECKPOINT_COMMENT = "blastbox-detonator-golden"
 
-POLL_INTERVAL_SECONDS = max(5, int(os.environ.get("BLASTBOX_POLL_INTERVAL", "30")))
-DETONATION_TIMEOUT_SECONDS = max(5, int(os.environ.get("BLASTBOX_DETONATION_TIMEOUT", "20")))
-MAX_DETONATOR_CHECKPOINTS = max(2, int(os.environ.get("BLASTBOX_MAX_CHECKPOINTS", "8")))
+POLL_INTERVAL_SECONDS = max(5, int(_env_value("BLASTBOX_POLL_INTERVAL", "30")))
+DETONATION_TIMEOUT_SECONDS = max(5, int(_env_value("BLASTBOX_DETONATION_TIMEOUT", "20")))
+MAX_DETONATOR_CHECKPOINTS = max(2, int(_env_value("BLASTBOX_MAX_CHECKPOINTS", "8")))
 
 OPENROUTER_MODEL = (
     os.environ.get("BLASTBOX_OPENROUTER_MODEL")

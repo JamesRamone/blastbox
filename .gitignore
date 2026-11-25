@@ -8,3 +8,4 @@ last_run/
 *.log
 agent_state.json
 agent_status.json
+history.json

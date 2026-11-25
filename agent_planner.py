@@ -20,22 +20,20 @@ import argparse
 import json
 import os
 import re
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
-OPENROUTER_CONNECTOR_ID = os.environ.get("BLASTBOX_OPENROUTER_CONNECTOR_ID") or "<openrouter-connector-id>"
-OPENROUTER_GATEWAY = f"https://api.sprites.dev/v1/gateway/openrouter/{OPENROUTER_CONNECTOR_ID}"
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+import config  # noqa: E402
 
-DEFAULT_MODELS = [
-    os.environ.get("BLASTBOX_OPENROUTER_MODEL")
-    or os.environ.get("OPENROUTER_MODEL")
-    or "nvidia/nemotron-3.5-lightning:free",
-    "nvidia/nemotron-3.5-lightning:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "openrouter/free",
-]
+OPENROUTER_CONNECTOR_ID = config.OPENROUTER_CONNECTOR_ID
+OPENROUTER_GATEWAY = config.OPENROUTER_GATEWAY
+DEFAULT_MODELS = list(config.DEFAULT_MODELS)
 
 ALLOWED_PR_STAGES = ("pip_install", "unittest", "pytest", "import_check")
 MAX_MCP_CALLS = 8
@@ -90,6 +88,7 @@ def _call_openrouter_json(
         if m and m not in models:
             models.append(m)
 
+    config.require_setting("BLASTBOX_OPENROUTER_CONNECTOR_ID", OPENROUTER_CONNECTOR_ID)
     errors: list[str] = []
     for model in models:
         body: dict[str, Any] = {

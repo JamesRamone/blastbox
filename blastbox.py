@@ -16,12 +16,10 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
-import ipaddress
 import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -39,15 +37,18 @@ import agent_planner  # noqa: E402
 import config  # noqa: E402
 import extract_iocs  # noqa: E402
 import init_dashboard  # noqa: E402
+import url_guard  # noqa: E402
 
 PR_URL_RE = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)(?:/.*)?$")
-GH_BLOB_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*)$")
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 CHECKPOINT_ID_RE = re.compile(r"\b(v\d+)\b")
-MAX_REMOTE_SKILL_BYTES = 256 * 1024
+TRACE_EVENTS = (
+    "execve,execveat,open,openat,openat2,creat,connect,sendto,sendmsg,sendmmsg,"
+    "socket,unlink,unlinkat,rename,renameat,renameat2,link,linkat,symlink,symlinkat,chmod,fchmodat"
+)
 
 # Generic filesystem snapshot helper executed inside the Detonator Sprite.
-# Captures /home/sprite (excluding /home/sprite/detonation) and /tmp (excluding /tmp/.blastbox_run).
+# Captures /home/sprite (excluding /home/sprite/detonation) and ephemeral temp dirs (/tmp, /var/tmp, /dev/shm).
 FS_SNAPSHOT_PY = r"""
 import hashlib, json, os
 from pathlib import Path
@@ -85,9 +86,12 @@ def snap_root(root_str, skip_prefixes):
                 continue
     return out
 
+tmp_snap = snap_root("/tmp", ["/tmp/.blastbox_run", "/tmp/.X11-unix", "/tmp/.ICE-unix", "/tmp/systemd-private"])
+tmp_snap.update(snap_root("/var/tmp", ["/var/tmp/systemd-private"]))
+tmp_snap.update(snap_root("/dev/shm", []))
 snapshot = {
     "home": snap_root("/home/sprite", ["/home/sprite/detonation"]),
-    "tmp": snap_root("/tmp", ["/tmp/.blastbox_run", "/tmp/.X11-unix", "/tmp/.ICE-unix", "/tmp/systemd-private"]),
+    "tmp": tmp_snap,
     "detonation_exists": Path("/home/sprite/detonation").exists(),
 }
 print(json.dumps(snapshot))
@@ -163,13 +167,29 @@ def _run_controller_python(
         return proc
 
     remote_script = f"/tmp/.ctrl_{script_path.name}"
-    file_args = [f"{script_path}:{remote_script}"]
+    file_args = [
+        f"{script_path}:{remote_script}",
+        f"{SCRIPT_DIR / 'config.py'}:/tmp/config.py",
+    ]
+    cleanup_targets = [remote_script, "/tmp/config.py"]
+    local_env = SCRIPT_DIR / ".env"
+    if local_env.is_file():
+        file_args.append(f"{local_env}:/tmp/.env")
+        cleanup_targets.append("/tmp/.env")
     for local_src, remote_tmp in upload_files or []:
         file_args.append(f"{local_src}:{remote_tmp}")
-    proc = sprite_exec(controller_sprite, ["/.sprite/bin/python3", remote_script, *args], files=file_args, check=True)
+        cleanup_targets.append(remote_tmp)
+    for r, _ in download_files or []:
+        cleanup_targets.append(r)
+
+    proc = sprite_exec(
+        controller_sprite,
+        ["env", "PYTHONPATH=/tmp:/home/sprite/blastbox-agent", "/.sprite/bin/python3", remote_script, *args],
+        files=file_args,
+        check=True,
+    )
     for remote_tmp, local_dst in download_files or []:
         sprite_pull(controller_sprite, remote_tmp, local_dst, check=True)
-    cleanup_targets = [remote_script] + [r for _, r in (upload_files or [])] + [r for r, _ in (download_files or [])]
     sprite_exec(controller_sprite, ["rm", "-f", *cleanup_targets], check=False)
     return proc
 
@@ -229,27 +249,32 @@ def verify_detonator_preflight(
 ) -> dict[str, Any]:
     log("1/9", f"Verifying isolation, zero secrets, and deny-all egress on '{detonator_sprite}'...")
 
-    # 1. Verify detonator has ZERO controller labels (Connectors denied)
+    # 1. Verify detonator has ZERO labels (Connectors denied)
     info_proc = run_cmd([config.SPRITE_BIN, "info", detonator_sprite], check=True)
-    if config.CONTROLLER_LABEL in info_proc.stdout:
+    label_match = re.search(r"^\s*Labels:\s*(.+)$", info_proc.stdout, re.MULTILINE)
+    if label_match and label_match.group(1).strip():
         raise RuntimeError(
-            f"SECURITY FAILURE: Detonator '{detonator_sprite}' has label '{config.CONTROLLER_LABEL}'. "
+            f"SECURITY FAILURE: Detonator '{detonator_sprite}' carries labels ({label_match.group(1).strip()}). "
             "Run ./init_detonator.py to lock down the detonator Sprite."
         )
 
-    # 2. Verify active deny-all outbound network policy on detonator
+    # 2. Verify strict single-rule deny-all outbound network policy on detonator
     pol_proc = run_cmd(
         [config.SPRITE_BIN, "api", f"/v1/sprites/{detonator_sprite}/policy/network", "--", "-sS"],
         check=True,
     )
     policy = json.loads(pol_proc.stdout.strip() or "{}")
     rules = policy.get("rules") if isinstance(policy, dict) else []
-    deny_all_active = isinstance(rules, list) and any(
-        isinstance(r, dict) and r.get("domain") == "*" and r.get("action") == "deny" for r in rules
+    deny_all_active = (
+        isinstance(rules, list)
+        and len(rules) == 1
+        and isinstance(rules[0], dict)
+        and rules[0].get("domain") == "*"
+        and rules[0].get("action") == "deny"
     )
     if not deny_all_active:
         raise RuntimeError(
-            f"SECURITY FAILURE: Detonator '{detonator_sprite}' lacks deny-all network policy (* -> deny): {policy}"
+            f"SECURITY FAILURE: Detonator '{detonator_sprite}' lacks strict single-rule (* -> deny) policy: {policy}"
         )
 
     # 3. Clean stale workspace/scratch, check zero secret env vars, and snapshot FS before
@@ -326,11 +351,37 @@ def verify_detonator_preflight(
     return info
 
 
-def create_baseline_checkpoint(sprite: str, *, prefix: str = "blastbox-detonator-clean", step_label: str = "2/9") -> str:
+def resolve_golden_checkpoint(detonator_sprite: str, *, fresh: bool = False) -> str:
+    """Reuse an immutable golden baseline checkpoint on `detonator_sprite` when available."""
+    if not fresh:
+        proc = run_cmd([config.SPRITE_BIN, "checkpoint", "list", "-s", detonator_sprite], check=False)
+        if proc.returncode == 0:
+            golden_ids: list[str] = []
+            for line in proc.stdout.splitlines():
+                if config.GOLDEN_CHECKPOINT_COMMENT in line:
+                    m = CHECKPOINT_ID_RE.search(line)
+                    if m and m.group(1) not in golden_ids:
+                        golden_ids.append(m.group(1))
+            if golden_ids:
+                golden_ids.sort(key=lambda v: int(v[1:]))
+                chosen = golden_ids[-1]
+                log("2/9", f"Reusing immutable golden baseline checkpoint on '{detonator_sprite}': {chosen}")
+                return chosen
+        return create_baseline_checkpoint(detonator_sprite, comment=config.GOLDEN_CHECKPOINT_COMMENT, step_label="2/9")
+    return create_baseline_checkpoint(detonator_sprite, prefix="blastbox-detonator-clean", step_label="2/9")
+
+
+def create_baseline_checkpoint(
+    sprite: str,
+    *,
+    prefix: str = "blastbox-detonator-clean",
+    comment: str | None = None,
+    step_label: str = "2/9",
+) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    comment = f"{prefix}-{ts}"
-    log(step_label, f"Creating checkpoint on '{sprite}' ({comment})...")
-    proc = run_cmd([config.SPRITE_BIN, "checkpoint", "create", "-s", sprite, "--comment", comment])
+    cp_comment = comment or f"{prefix}-{ts}"
+    log(step_label, f"Creating checkpoint on '{sprite}' ({cp_comment})...")
+    proc = run_cmd([config.SPRITE_BIN, "checkpoint", "create", "-s", sprite, "--comment", cp_comment])
     combined = f"{proc.stdout}\n{proc.stderr}"
     m = CHECKPOINT_ID_RE.search(combined)
     if not m:
@@ -350,6 +401,7 @@ def _run_pr_fetch_on_controller(
     *,
     local_controller: bool,
 ) -> tuple[dict[str, Any], Path]:
+    config.require_setting("BLASTBOX_GITHUB_CONNECTOR_ID", config.GITHUB_CONNECTOR_ID)
     fetch_code = f"""
 import base64, json, sys, urllib.request
 from pathlib import Path
@@ -460,84 +512,17 @@ def _run_agent_planner(
 
 
 def _normalize_skill_url(raw_url: str) -> str:
-    url = raw_url.strip()
-    m = GH_BLOB_RE.match(url)
-    if m:
-        return f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{m.group(3)}/{m.group(4)}"
-    return url
+    return url_guard.normalize_skill_url(raw_url)
 
 
 def validate_untrusted_https_url(raw_url: str) -> str:
     """Validate an untrusted HTTPS URL against strict SSRF rules."""
-    url = _normalize_skill_url(raw_url)
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme.lower() != "https":
-        raise ValueError(f"Only HTTPS URLs are permitted for untrusted fetch (got scheme={parsed.scheme!r})")
-    host = (parsed.hostname or "").strip().lower().rstrip(".")
-    if not host:
-        raise ValueError("URL is missing a hostname")
-    if (
-        host == "localhost"
-        or host == "api.sprites.dev"
-        or host.endswith(".sprites.dev")
-        or host.endswith(".local")
-        or host.endswith(".internal")
-        or host.endswith(".localhost")
-    ):
-        raise ValueError(f"Blocked internal/gateway hostname: {host}")
-
-    # Direct IP literal check
-    try:
-        ip_lit = ipaddress.ip_address(host)
-        if not ip_lit.is_global:
-            raise ValueError(f"Blocked non-global IP literal: {host}")
-    except ValueError as exc:
-        if "Blocked non-global IP" in str(exc):
-            raise
-
-    port = parsed.port or 443
-    try:
-        addr_infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise ValueError(f"Failed to resolve host {host}: {exc}") from exc
-    if not addr_infos:
-        raise ValueError(f"No DNS addresses resolved for {host}")
-
-    for info in addr_infos:
-        sockaddr = info[4]
-        ip_str = sockaddr[0].split("%", 1)[0]
-        ip_obj = ipaddress.ip_address(ip_str)
-        if not ip_obj.is_global:
-            raise ValueError(f"Blocked non-global resolved IP {ip_str} for host {host}")
-    return url
+    return url_guard.validate_untrusted_https_url(raw_url)
 
 
-class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    max_redirections = 3
-
-    def redirect_request(self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> urllib.request.Request | None:
-        resolved = urllib.parse.urljoin(req.full_url, newurl)
-        validated = validate_untrusted_https_url(resolved)
-        return super().redirect_request(req, fp, code, msg, headers, validated)
-
-
-def fetch_untrusted_url_safely(raw_url: str, *, max_bytes: int = MAX_REMOTE_SKILL_BYTES) -> tuple[str, str]:
-    """Fetch untrusted Markdown/skill content over HTTPS with SSRF & size guards."""
-    safe_url = validate_untrusted_https_url(raw_url)
-    opener = urllib.request.build_opener(_SafeRedirectHandler())
-    req = urllib.request.Request(
-        safe_url,
-        headers={
-            "Accept": "text/markdown, text/plain;q=0.9, */*;q=0.5",
-            "User-Agent": "blastbox-skill-fetch/1.0",
-        },
-    )
-    with opener.open(req, timeout=15) as resp:
-        final_url = validate_untrusted_https_url(resp.geturl())
-        raw = resp.read(max_bytes + 1)
-    if len(raw) > max_bytes:
-        raise ValueError(f"Remote target exceeds {max_bytes} byte limit")
-    return final_url, raw.decode("utf-8", errors="replace")
+def fetch_untrusted_url_safely(raw_url: str, *, max_bytes: int = url_guard.MAX_REMOTE_BYTES) -> tuple[str, str]:
+    """Fetch untrusted Markdown/skill content over HTTPS with pinned-IP SSRF & size guards."""
+    return url_guard.fetch_untrusted_url_safely(raw_url, max_bytes=max_bytes)
 
 
 def _run_skill_url_fetch_on_controller(
@@ -548,67 +533,17 @@ def _run_skill_url_fetch_on_controller(
     local_controller: bool,
 ) -> tuple[str, str]:
     if local_controller:
-        final_url, text = fetch_untrusted_url_safely(raw_url)
+        final_url, text = url_guard.fetch_untrusted_url_safely(raw_url)
         return final_url, text
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
-        runner = tmp / "fetch_skill.py"
-        runner.write_text(
-            f"""
-import ipaddress, json, re, socket, sys, urllib.parse, urllib.request
-from pathlib import Path
-
-GH_BLOB_RE = re.compile(r"^https://github\\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*)$")
-MAX_BYTES = {MAX_REMOTE_SKILL_BYTES}
-
-def validate_url(raw):
-    url = raw.strip()
-    m = GH_BLOB_RE.match(url)
-    if m:
-        url = f"https://raw.githubusercontent.com/{{m.group(1)}}/{{m.group(2)}}/{{m.group(3)}}/{{m.group(4)}}"
-    p = urllib.parse.urlsplit(url)
-    if p.scheme.lower() != "https":
-        raise ValueError(f"Only HTTPS URLs permitted (got {{p.scheme!r}})")
-    host = (p.hostname or "").strip().lower().rstrip(".")
-    if not host or host == "localhost" or host == "api.sprites.dev" or host.endswith((".sprites.dev", ".local", ".internal", ".localhost")):
-        raise ValueError(f"Blocked internal/gateway hostname: {{host}}")
-    try:
-        ip_lit = ipaddress.ip_address(host)
-        if not ip_lit.is_global:
-            raise ValueError(f"Blocked non-global IP literal: {{host}}")
-    except ValueError as exc:
-        if "Blocked non-global IP" in str(exc):
-            raise
-    for info in socket.getaddrinfo(host, p.port or 443, type=socket.SOCK_STREAM):
-        ip_obj = ipaddress.ip_address(info[4][0].split("%", 1)[0])
-        if not ip_obj.is_global:
-            raise ValueError(f"Blocked non-global IP {{ip_obj}} for {{host}}")
-    return url
-
-class SafeRedir(urllib.request.HTTPRedirectHandler):
-    max_redirections = 3
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        v = validate_url(urllib.parse.urljoin(req.full_url, newurl))
-        return super().redirect_request(req, fp, code, msg, headers, v)
-
-safe_u = validate_url({raw_url!r})
-req = urllib.request.Request(safe_u, headers={{"Accept": "text/markdown, text/plain;q=0.9", "User-Agent": "blastbox-skill-fetch/1.0"}})
-with urllib.request.build_opener(SafeRedir()).open(req, timeout=15) as r:
-    final_u = validate_url(r.geturl())
-    raw = r.read(MAX_BYTES + 1)
-if len(raw) > MAX_BYTES:
-    raise ValueError("Remote skill file exceeds 256 KB")
-Path(sys.argv[1]).write_text(json.dumps({{"url": final_u, "text": raw.decode("utf-8", errors="replace")}}), encoding="utf-8")
-""",
-            encoding="utf-8",
-        )
         remote_out = "/tmp/.ctrl_skill_bundle.json"
         local_out = tmp / "skill_bundle.json"
         _run_controller_python(
             controller_sprite,
-            runner,
-            [remote_out],
+            SCRIPT_DIR / "url_guard.py",
+            [raw_url, remote_out],
             local_controller=False,
             download_files=[(remote_out, local_out)],
         )
@@ -751,13 +686,14 @@ def stage_and_plan_target(
             )
             sprite_push(detonator_sprite, blocks_dir, "/home/sprite/detonation/.blastbox_skill_blocks", recursive=True)
 
-        owner, repo = default_repo.split("/", 1)
+        owner, repo = default_repo.split("/", 1) if "/" in default_repo else ("", "")
         log("3/9", f"Staged SKILL.md ({len(manifest_blocks)} planned code blocks) to '{detonator_sprite}'.")
         return (
             {
                 "mode": "skill",
                 "target_label": skill_label,
                 "skill_url": skill_url,
+                "skill_block_count": len(manifest_blocks),
                 "owner": owner,
                 "repo": repo,
                 "controller_sprite": controller_sprite,
@@ -779,17 +715,19 @@ def stage_and_plan_target(
         sprite_push(detonator_sprite, child, f"/home/sprite/detonation/{child.name}", recursive=child.is_dir())
         files_list.append(child.name)
 
-    owner, repo = default_repo.split("/", 1)
+    owner, repo = default_repo.split("/", 1) if "/" in default_repo else ("", "")
     if resolved_mode == "mcp":
         probe_local = SCRIPT_DIR / "mcp_probe.py"
         if not probe_local.exists():
             raise FileNotFoundError(f"Missing MCP probe harness: {probe_local}")
         sprite_push(detonator_sprite, probe_local, "/home/sprite/detonation/.blastbox_mcp_probe.py")
 
-        # Phase A: discover MCP tools/resources/prompts inside detonator
+        # Phase A: discover MCP tools/resources/prompts inside detonator UNDER strace
         discover_cmd = (
             'export PATH="/.sprite/bin:$PATH"; '
+            "mkdir -p /tmp/.blastbox_run && rm -f /tmp/.blastbox_run/discover.strace && "
             "cd /home/sprite/detonation && "
+            f"timeout 10s strace -f -s 256 -e trace={TRACE_EVENTS} -o /tmp/.blastbox_run/discover.strace "
             "/.sprite/bin/python3 /home/sprite/detonation/.blastbox_mcp_probe.py "
             "--work-dir /home/sprite/detonation --discover-only --catalog /tmp/.blastbox_run/mcp_catalog.json"
         )
@@ -851,6 +789,7 @@ def run_strace_detonation(
     *,
     mode: str,
     agent_plan: dict[str, Any],
+    skill_block_count: int | None = None,
 ) -> dict[str, Any]:
     timeout_s = config.DETONATION_TIMEOUT_SECONDS
     if mode == "mcp":
@@ -907,16 +846,21 @@ def run_strace_detonation(
                     '    fi',
                 ]
             )
-        if "import_check" in stages and "unittest" not in stages and "pytest" not in stages:
-            stage_cmds.append(
-                '    PYTHONPATH=/home/sprite/detonation/.pkg_install:/home/sprite/detonation "\'"$REAL_PYTHON"\'" -c "import os, pkgutil; print([m.name for m in pkgutil.iter_modules([\".\", \".pkg_install\"])])"'
+        if "import_check" in stages:
+            stage_cmds.extend(
+                [
+                    '    echo "=== [blastbox] import_check ==="',
+                    (
+                        '    PYTHONPATH=/home/sprite/detonation/.pkg_install:/home/sprite/detonation "\'"$REAL_PYTHON"\'" -c '
+                        '"import importlib, pkgutil; '
+                        'mods=[m.name for m in pkgutil.iter_modules([\\"/home/sprite/detonation/.pkg_install\\", \\"/home/sprite/detonation\\"]) '
+                        'if m.name not in (\\"setup\\", \\"tests\\", \\"test\\") and not m.name.startswith(\\"test_\\")]; '
+                        'print(\\"modules:\\", mods); '
+                        '[importlib.import_module(m) for m in mods[:8]]"'
+                    ),
+                ]
             )
         inner_cmd = "\n".join(stage_cmds)
-
-    trace_events = (
-        "execve,execveat,open,openat,openat2,creat,connect,sendto,sendmsg,sendmmsg,"
-        "socket,unlink,unlinkat,rename,renameat,renameat2,link,linkat,symlink,symlinkat,chmod,fchmodat"
-    )
 
     detonate_bash = f"""
 export PATH="/.sprite/bin:$PATH"
@@ -927,7 +871,7 @@ TMPDIR=/home/sprite/detonation/.blastbox_tmp \\
 PIP_DISABLE_PIP_VERSION_CHECK=1 \\
 PIP_NO_CACHE_DIR=1 \\
 timeout {timeout_s}s strace -f -s 256 \\
-  -e trace={trace_events} \\
+  -e trace={TRACE_EVENTS} \\
   -o /tmp/.blastbox_run/blastbox.strace \\
   bash -c '
 {inner_cmd}
@@ -938,6 +882,8 @@ import json, sys
 from pathlib import Path
 strace_file = Path("/tmp/.blastbox_run/blastbox.strace")
 meta = {{
+    "mode": {mode!r},
+    "skill_block_count": {skill_block_count!r},
     "exit_code": int(sys.argv[1]),
     "timed_out": int(sys.argv[1]) == 124,
     "strace_bytes": strace_file.stat().st_size if strace_file.exists() else 0,
@@ -969,6 +915,12 @@ PY
 def pull_forensic_artifacts(detonator_sprite: str, run_dir: Path, *, mode: str) -> None:
     log("5/9", f"Pulling forensic artifacts from '{detonator_sprite}'...")
     sprite_pull(detonator_sprite, "/tmp/.blastbox_run/blastbox.strace", run_dir / "blastbox.strace", check=True)
+    if mode == "mcp":
+        discover_strace = run_dir / "discover.strace"
+        if sprite_pull(detonator_sprite, "/tmp/.blastbox_run/discover.strace", discover_strace, check=False):
+            main_trace = (run_dir / "blastbox.strace").read_text(encoding="utf-8", errors="replace")
+            disc_trace = discover_strace.read_text(encoding="utf-8", errors="replace")
+            (run_dir / "blastbox.strace").write_text(f"{disc_trace}\n{main_trace}", encoding="utf-8")
     sprite_pull(detonator_sprite, "/tmp/.blastbox_run/command.stdout", run_dir / "command.stdout", check=True)
     sprite_pull(detonator_sprite, "/tmp/.blastbox_run/command.stderr", run_dir / "command.stderr", check=True)
     readme_ok = sprite_pull(detonator_sprite, "/home/sprite/detonation/README.md", run_dir / "README.md", check=False)
@@ -983,8 +935,10 @@ def pull_forensic_artifacts(detonator_sprite: str, run_dir: Path, *, mode: str) 
             detonator_sprite,
             "/home/sprite/detonation/.blastbox_mcp_transcript.json",
             run_dir / "mcp_transcript.json",
-            check=True,
+            check=False,
         )
+        if not mcp_ok:
+            (run_dir / "mcp_transcript.json").write_text("{}\n", encoding="utf-8")
     log("5/9", f"Pulled strace, stdout/stderr, README.md (present={readme_ok}, skill={skill_ok}, mcp_transcript={mcp_ok}).")
 
 
@@ -1177,6 +1131,7 @@ def _build_sanitized_run_record(
     preflight: dict[str, Any],
     agent_plan: dict[str, Any],
     wall_seconds: float,
+    trigger: str = "cli",
 ) -> dict[str, Any]:
     now_dt = datetime.now(timezone.utc)
     ts_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1222,6 +1177,7 @@ def _build_sanitized_run_record(
     record = {
         "run_id": f"{ts_compact}-{suffix}",
         "timestamp_utc": ts_iso,
+        "trigger": trigger,
         "target_kind": resolved_mode,
         "target_label": target_label,
         "target_url": target_url,
@@ -1269,6 +1225,9 @@ def persist_history_and_verify_dashboard(
     public_url: str = config.PUBLIC_URL,
     local_controller: bool = False,
 ) -> dict[str, Any]:
+    public_url = public_url or config.detect_sprite_url(controller_sprite)
+    if not public_url:
+        raise RuntimeError(f"Could not determine public dashboard URL for '{controller_sprite}'. Set BLASTBOX_PUBLIC_URL.")
     log("9/9", f"Persisting sanitized run '{run_record['run_id']}' to controller dashboard & verifying HTTP 200...")
     history = init_dashboard.load_or_init_history(
         history_path, sprite_name=controller_sprite, public_url=public_url
@@ -1334,6 +1293,8 @@ def run_audit(
     no_post: bool = False,
     no_dashboard_sync: bool = False,
     local_controller: bool = False,
+    fresh_checkpoint: bool = False,
+    trigger: str = "cli",
 ) -> dict[str, Any]:
     run_start = time.monotonic()
     run_dir = output_dir.resolve()
@@ -1377,9 +1338,7 @@ def run_audit(
         local_controller=local_controller,
     )
 
-    checkpoint_id = create_baseline_checkpoint(
-        detonator_sprite, prefix="blastbox-detonator-clean", step_label="2/9"
-    )
+    checkpoint_id = resolve_golden_checkpoint(detonator_sprite, fresh=fresh_checkpoint)
 
     try:
         target_info, agent_plan = stage_and_plan_target(
@@ -1394,7 +1353,13 @@ def run_audit(
             model=model,
             local_controller=local_controller,
         )
-        run_strace_detonation(detonator_sprite, run_dir, mode=resolved_mode, agent_plan=agent_plan)
+        run_strace_detonation(
+            detonator_sprite,
+            run_dir,
+            mode=resolved_mode,
+            agent_plan=agent_plan,
+            skill_block_count=target_info.get("skill_block_count"),
+        )
         pull_forensic_artifacts(detonator_sprite, run_dir, mode=resolved_mode)
     finally:
         restore_info = restore_checkpoint_and_verify(detonator_sprite, checkpoint_id, run_dir)
@@ -1406,13 +1371,16 @@ def run_audit(
         f"Deterministic verdict: {iocs['verdict']} (risk_score={iocs['risk_score']}/100, counts={json.dumps(iocs['counts'])})",
     )
 
+    effective_no_post = bool(
+        no_post or (resolved_mode != "pr" and (not repo or not config.GITHUB_CONNECTOR_ID))
+    )
     triage_result = run_clean_sprite_triage(
         controller_sprite,
         run_dir,
         iocs,
         target_info,
         agent_plan,
-        no_post=no_post,
+        no_post=effective_no_post,
         model=model,
         local_controller=local_controller,
     )
@@ -1427,14 +1395,17 @@ def run_audit(
         preflight=preflight,
         agent_plan=agent_plan,
         wall_seconds=wall_seconds,
+        trigger=trigger,
     )
 
     dashboard_sync = None
     if not no_dashboard_sync:
+        public_url = config.PUBLIC_URL or config.detect_sprite_url(controller_sprite)
         dashboard_sync = persist_history_and_verify_dashboard(
             controller_sprite,
             history_resolved,
             run_record,
+            public_url=public_url,
             local_controller=local_controller,
         )
 
@@ -1490,6 +1461,7 @@ def main() -> int:
     parser.add_argument("--no-post", action="store_true", help="Do not post PR comment / Issue to GitHub")
     parser.add_argument("--no-dashboard-sync", action="store_true", help="Skip updating public dashboard history.json")
     parser.add_argument("--local-controller", action="store_true", help="Run controller steps locally (inside controller Sprite)")
+    parser.add_argument("--fresh-checkpoint", action="store_true", help="Create a fresh detonator checkpoint instead of reusing golden")
     args = parser.parse_args()
 
     final_summary = run_audit(
@@ -1504,6 +1476,7 @@ def main() -> int:
         no_post=args.no_post,
         no_dashboard_sync=args.no_dashboard_sync,
         local_controller=args.local_controller,
+        fresh_checkpoint=args.fresh_checkpoint,
     )
     print("\n=== BLASTBOX RUN SUMMARY ===")
     print(json.dumps(final_summary, indent=2))

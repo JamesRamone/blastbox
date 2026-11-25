@@ -124,23 +124,30 @@ def ensure_tools_installed(sprite: str) -> None:
 def verify_isolation(sprite: str) -> dict[str, Any]:
     info_proc = _run([config.SPRITE_BIN, "info", sprite], check=True)
     info_text = info_proc.stdout
-    if config.CONTROLLER_LABEL in info_text:
+    label_match = re.search(r"^\s*Labels:\s*(.+)$", info_text, re.MULTILINE)
+    if label_match and label_match.group(1).strip():
         raise RuntimeError(
-            f"SECURITY FAILURE: Detonator sprite '{sprite}' still carries label '{config.CONTROLLER_LABEL}'!\n{info_text}"
+            f"SECURITY FAILURE: Detonator sprite '{sprite}' still carries labels ({label_match.group(1).strip()})!\n{info_text}"
         )
 
     policy = get_network_policy(sprite)
     rules = policy.get("rules") if isinstance(policy, dict) else None
-    has_deny_all = isinstance(rules, list) and any(
-        isinstance(r, dict) and r.get("domain") == "*" and r.get("action") == "deny" for r in rules
+    strict_deny_all = (
+        isinstance(rules, list)
+        and len(rules) == 1
+        and isinstance(rules[0], dict)
+        and rules[0].get("domain") == "*"
+        and rules[0].get("action") == "deny"
     )
-    if not has_deny_all:
-        raise RuntimeError(f"SECURITY FAILURE: Detonator '{sprite}' lacks deny-all network policy: {policy}")
+    if not strict_deny_all:
+        raise RuntimeError(
+            f"SECURITY FAILURE: Detonator '{sprite}' lacks strict single-rule (* -> deny) policy: {policy}"
+        )
 
     # Live proof inside the detonator: zero secrets, external internet blocked, AND allowed GitHub Connector route blocked
-    allowed_issue_url = (
-        f"{config.GITHUB_GATEWAY}/repos/{config.DEFAULT_REPO}/issues"
-    )
+    probe_repo = config.DEFAULT_REPO or "octocat/hello-world"
+    gh_gateway = config.GITHUB_GATEWAY or "https://api.sprites.dev/v1/gateway/github/unconfigured"
+    allowed_issue_url = f"{gh_gateway}/repos/{probe_repo}/issues"
     verify_py = f"""
 import json, os, subprocess, sys
 forbidden = {list(config.FORBIDDEN_ENV_VARS)!r}
@@ -201,9 +208,8 @@ def setup_detonator(sprite: str = config.DETONATOR_SPRITE, *, create_checkpoint:
 
     checkpoint_id = None
     if create_checkpoint:
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         cp_proc = _run(
-            [config.SPRITE_BIN, "checkpoint", "create", "-s", sprite, "--comment", f"blastbox-detonator-clean-{ts}"],
+            [config.SPRITE_BIN, "checkpoint", "create", "-s", sprite, "--comment", config.GOLDEN_CHECKPOINT_COMMENT],
             check=True,
         )
         m = CHECKPOINT_ID_RE.search(f"{cp_proc.stdout}\n{cp_proc.stderr}")

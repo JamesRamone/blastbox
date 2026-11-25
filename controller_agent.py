@@ -76,6 +76,8 @@ def _check_sprite_cli_ready(detonator_sprite: str) -> tuple[bool, str | None]:
 
 
 def _fetch_open_prs(repo: str) -> list[dict[str, Any]]:
+    config.require_setting("BLASTBOX_REPO", repo)
+    config.require_setting("BLASTBOX_GITHUB_CONNECTOR_ID", config.GITHUB_CONNECTOR_ID)
     url = f"{config.GITHUB_GATEWAY}/repos/{repo}/pulls?state=open&per_page=20"
     req = urllib.request.Request(
         url,
@@ -266,7 +268,29 @@ def _poll_slack_channels(
             if dedup_key in state["slack_handled_ts"]:
                 continue
 
+            if cmd.get("action") == "help":
+                slack_bot.add_reaction(channel, ts, "wave")
+                try:
+                    slack_bot.post_message(channel, slack_bot.format_help_message(), thread_ts=ts)
+                except Exception as exc:  # noqa: BLE001
+                    slack_err = f"Slack help failed: {str(exc)[:180]}"
+                state["slack_handled_ts"][dedup_key] = "help"
+                _write_json_atomic(state_path, state)
+                continue
+
             raw_target = cmd["target"]
+            try:
+                target_arg, resolved_mode, target_no_post = slack_bot.resolve_boom_target(raw_target, work_dir)
+            except ValueError as exc:
+                slack_bot.add_reaction(channel, ts, "warning")
+                try:
+                    slack_bot.post_message(channel, f":warning: {exc}", thread_ts=ts)
+                except Exception:  # noqa: BLE001
+                    pass
+                state["slack_handled_ts"][dedup_key] = "rejected:target"
+                _write_json_atomic(state_path, state)
+                continue
+
             slack_bot.add_reaction(channel, ts, "bomb")
 
             if not sprite_ok:
@@ -283,8 +307,7 @@ def _poll_slack_channels(
                 _write_json_atomic(state_path, state)
                 continue
 
-            target_arg, resolved_mode, target_no_post = slack_bot.resolve_boom_target(raw_target, work_dir)
-            effective_no_post = bool(no_post or target_no_post)
+            effective_no_post = bool(no_post or target_no_post or not repo or not config.GITHUB_CONNECTOR_ID)
             job_label = f"Slack {resolved_mode.upper()}: {raw_target[:48]}"
             print(f"[blastbox-agent] {job_label} (channel={channel}, ts={ts})", flush=True)
             flush_fn(active_job=job_label)
@@ -313,6 +336,7 @@ def _poll_slack_channels(
                     no_post=effective_no_post,
                     no_dashboard_sync=False,
                     local_controller=True,
+                    trigger="slack",
                 )
                 run_id = str(summary.get("run_id") or "")
                 state["slack_handled_ts"][dedup_key] = run_id or "done"
@@ -446,7 +470,8 @@ def run_poll_cycle(
             "sprite_cli_note": None if sprite_ok else f"Run 'sprite console -s {controller_sprite}' then 'sprite login' to enable autonomous detonator control",
             "slack_connected": bool(slack_meta.get("slack_connected")),
             "slack_bot_user": slack_meta.get("slack_bot_user"),
-            "slack_channels": list(slack_meta.get("slack_channels") or config.SLACK_CHANNELS),
+            "slack_channels_count": len(list(slack_meta.get("slack_channels") or config.SLACK_CHANNELS)),
+            "slack_channel_label": config.SLACK_CHANNEL_LABEL,
             "slack_commands_handled": len(state.get("slack_handled_ts") or {}),
             "active_job": active_job,
             "last_poll_utc": _now_utc(),
@@ -466,6 +491,27 @@ def run_poll_cycle(
     _flush_status(active_job=None)
 
     run_err: str | None = None
+    # Prioritize interactive Slack `@blastbox boom` commands before PR poll batch
+    if poll_slack and config.SLACK_CHANNELS:
+        slack_meta = _poll_slack_channels(
+            state=state,
+            state_path=state_path,
+            sprite_ok=sprite_ok,
+            sprite_err=sprite_err,
+            controller_sprite=controller_sprite,
+            detonator_sprite=detonator_sprite,
+            repo=repo,
+            history_path=history_path,
+            work_dir=work_dir,
+            no_post=no_post,
+            new_runs=new_runs,
+            flush_fn=_flush_status,
+            cache=cache,
+            bot_user=cache.get("slack_bot_user"),
+            bot_user_id=cache.get("slack_bot_user_id"),
+        )
+        cache["slack_meta"] = dict(slack_meta)
+
     if poll_prs and sprite_ok and not gh_err:
         for pr in open_prs:
             pr_num = pr.get("number")
@@ -491,6 +537,7 @@ def run_poll_cycle(
                     no_post=no_post,
                     no_dashboard_sync=False,
                     local_controller=True,
+                    trigger="pr-watcher",
                 )
                 run_id = str(summary.get("run_id") or "")
                 state["audited"][key] = run_id
@@ -505,26 +552,6 @@ def run_poll_cycle(
             f"[blastbox-agent] Sprite CLI auth pending on controller '{controller_sprite}': {sprite_err}",
             flush=True,
         )
-
-    if poll_slack and config.SLACK_CHANNELS:
-        slack_meta = _poll_slack_channels(
-            state=state,
-            state_path=state_path,
-            sprite_ok=sprite_ok,
-            sprite_err=sprite_err,
-            controller_sprite=controller_sprite,
-            detonator_sprite=detonator_sprite,
-            repo=repo,
-            history_path=history_path,
-            work_dir=work_dir,
-            no_post=no_post,
-            new_runs=new_runs,
-            flush_fn=_flush_status,
-            cache=cache,
-            bot_user=cache.get("slack_bot_user"),
-            bot_user_id=cache.get("slack_bot_user_id"),
-        )
-        cache["slack_meta"] = dict(slack_meta)
 
     return _flush_status(active_job=None, last_error=run_err)
 

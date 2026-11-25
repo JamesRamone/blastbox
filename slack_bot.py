@@ -38,6 +38,7 @@ def _slack_request(
     json_body: dict[str, Any] | None = None,
     timeout: int = 20,
 ) -> dict[str, Any]:
+    config.require_setting("BLASTBOX_SLACK_CONNECTOR_ID", config.SLACK_CONNECTOR_ID)
     url = f"{config.SLACK_GATEWAY.rstrip('/')}/{api_method.lstrip('/')}"
     if params:
         filtered = {k: v for k, v in params.items() if v is not None}
@@ -143,34 +144,46 @@ def _strip_slack_links(text: str) -> str:
 
 
 def parse_boom_command(text: str, bot_user_id: str | None = None) -> dict[str, str] | None:
-    """Parse `@blastbox boom <target>`, `<@BOT> boom <target>`, or `boom <target>`."""
+    """Parse explicit `@blastbox boom <target>`, `<@BOT> boom <target>`, `!boom <target>`, or `@blastbox help`."""
     if not text or not isinstance(text, str):
         return None
     cleaned = _strip_slack_links(text).strip()
 
-    prefixes = [r"!boom"]
+    mention_prefixes = [r"!boom"]
     if bot_user_id:
-        prefixes.append(rf"<@{re.escape(bot_user_id)}>[\s,:]*boom")
-    prefixes.extend(
-        [
-            r"<@[A-Z0-9]+>[\s,:]*boom",
-            r"@?(?:blastbox|sprites_bot)[\s,:]+boom",
-            r"boom",
-        ]
-    )
-    pattern = re.compile(r"^(?:" + "|".join(prefixes) + r")\s+(\S+)", re.IGNORECASE)
+        mention_prefixes.append(rf"<@{re.escape(bot_user_id)}>")
+    mention_prefixes.extend([r"<@[A-Z0-9]+>", r"@(?:blastbox|sprites_bot)"])
+    mention_group = "(?:" + "|".join(mention_prefixes) + ")"
+
+    help_re = re.compile(rf"^{mention_group}[\s,:]+help(?:\s|$)|^!boom[\s,:]+help(?:\s|$)", re.IGNORECASE)
+    if help_re.match(cleaned):
+        return {"action": "help", "target": "", "raw_text": text}
+
+    boom_prefixes = [r"!boom"]
+    if bot_user_id:
+        boom_prefixes.append(rf"<@{re.escape(bot_user_id)}>[\s,:]+boom")
+    boom_prefixes.extend([r"<@[A-Z0-9]+>[\s,:]+boom", r"@(?:blastbox|sprites_bot)[\s,:]+boom"])
+
+    pattern = re.compile(r"^(?:" + "|".join(boom_prefixes) + r")\s+(\S+)", re.IGNORECASE)
     m = pattern.match(cleaned)
     if not m:
         return None
     target = m.group(1).strip().strip("`\"'<>")
     if not target:
         return None
-    return {"target": target, "raw_text": text}
+    if target.lower() == "help":
+        return {"action": "help", "target": "", "raw_text": text}
+    return {"action": "boom", "target": target, "raw_text": text}
 
 
 def resolve_boom_target(raw_target: str, base_dir: Path) -> tuple[str, str, bool]:
-    """Map Slack target string or shortcut into `(target_arg, mode, no_post)`."""
-    low = raw_target.strip().lower()
+    """Map Slack target string or explicit demo shortcut into `(target_arg, mode, no_post)`.
+
+    Security boundary: NEVER fall back to arbitrary local file paths on the Controller Sprite.
+    Only known built-in fixture shortcuts and validated HTTPS URLs are permitted.
+    """
+    cleaned = raw_target.strip()
+    low = cleaned.lower()
     fixtures = base_dir / "fixtures"
     shortcuts: dict[str, tuple[str, str, bool]] = {
         "poisoned-skill": (str(fixtures / "poisoned-skill"), "skill", True),
@@ -181,16 +194,34 @@ def resolve_boom_target(raw_target: str, base_dir: Path) -> tuple[str, str, bool
         "mcp-bad": (str(fixtures / "poisoned-mcp"), "mcp", True),
         "clean-mcp": (str(fixtures / "clean-mcp"), "mcp", True),
         "mcp-clean": (str(fixtures / "clean-mcp"), "mcp", True),
-        "poisoned-pr": (f"https://github.com/{config.DEFAULT_REPO}/pull/1", "pr", False),
-        "clean-pr": (f"https://github.com/{config.DEFAULT_REPO}/pull/8", "pr", False),
     }
     if low in shortcuts:
         return shortcuts[low]
 
-    if PR_URL_RE.match(raw_target):
-        return raw_target, "pr", False
+    if PR_URL_RE.match(cleaned):
+        if low.startswith("http://"):
+            raise ValueError("Only HTTPS GitHub PR URLs are supported.")
+        return cleaned, "pr", False
 
-    return raw_target, "skill", True
+    if low.startswith("https://"):
+        return cleaned, "skill", True
+
+    raise ValueError(
+        "Unsupported target. Provide an https:// PR or SKILL.md URL, or one of: "
+        "`poisoned-skill`, `clean-skill`, `poisoned-mcp`, `clean-mcp`."
+    )
+
+
+def format_help_message() -> str:
+    return (
+        "*Blastbox Slack Commands*\n"
+        "• `@blastbox boom poisoned-skill`  - Blocked SKILL.md demo (100/100)\n"
+        "• `@blastbox boom clean-skill`     - Clean SKILL.md demo (0/100)\n"
+        "• `@blastbox boom poisoned-mcp`    - Blocked 2-tool MCP demo\n"
+        "• `@blastbox boom clean-mcp`       - Clean 2-tool MCP demo\n"
+        "• `@blastbox boom https://raw.githubusercontent.com/<owner>/<repo>/main/SKILL.md`\n"
+        "• `@blastbox boom https://github.com/<owner>/<repo>/pull/<number>`"
+    )
 
 
 def format_slack_verdict(summary: dict[str, Any], public_url: str) -> tuple[str, list[dict[str, Any]]]:
@@ -216,9 +247,13 @@ def format_slack_verdict(summary: dict[str, Any], public_url: str) -> tuple[str,
     else:
         badge = f":white_check_mark: *PASS ({score}/100)*"
 
-    fallback = f"Blastbox {verdict} ({score}/100) for {target_label} | {public_url}"
+    dash_url = public_url
+    if public_url and run_id:
+        dash_url = f"{public_url.rstrip('/')}/#run={urllib.parse.quote(str(run_id))}"
 
-    links = [f"<{public_url}|Open Live Dashboard>"]
+    fallback = f"Blastbox {verdict} ({score}/100) for {target_label} | {dash_url}"
+
+    links = [f"<{dash_url}|Open Live Dashboard>"] if dash_url else []
     if gh_url:
         links.append(f"<{gh_url}|Open GitHub Audit>")
 

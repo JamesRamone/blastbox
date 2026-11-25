@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Deterministic IOC and behavioral signal extractor for Blastbox.
 
-Parses kernel-level strace output, command stdout/stderr, generic filesystem
-before/after diffs, timeout exit codes, README.md text, and MCP discovery
-metadata with zero LLM involvement. Produces structured findings with exact
-telemetry evidence lines, risk score, and deterministic verdict (BLOCK/REVIEW/PASS).
+Parses strace syscall logs, command stdout/stderr, generic filesystem before/after
+diffs, timeout exit codes, README.md/SKILL.md text, and MCP discovery metadata
+with zero LLM involvement. Produces structured findings with exact telemetry
+evidence lines, risk score, and deterministic verdict (BLOCK/REVIEW/PASS).
 """
 
 from __future__ import annotations
@@ -14,11 +14,17 @@ import ipaddress
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+import config  # noqa: E402
+
 WORKSPACE_PREFIX = "/home/sprite/detonation"
-GITHUB_CONNECTOR_ID = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID") or "<github-connector-id>"
+GITHUB_CONNECTOR_ID = config.GITHUB_CONNECTOR_ID
 
 # Sensitive file path patterns probed via open/openat/openat2
 SENSITIVE_PATH_RULES: list[tuple[str, re.Pattern[str], str]] = [
@@ -33,6 +39,9 @@ SENSITIVE_PATH_RULES: list[tuple[str, re.Pattern[str], str]] = [
     ("netrc", re.compile(r"(?:^|/)\.netrc$"), "Probes .netrc credential file"),
     ("git_credentials", re.compile(r"(?:^|/)\.git-credentials$"), "Probes git credential store"),
     ("fly_auth", re.compile(r"/\.config/fly-agent-auth(?:/|$)"), "Probes Fly agent auth directory"),
+    ("sprites_auth", re.compile(r"(?:^|/)\.sprites(?:/|$)"), "Probes Fly Sprites CLI credential store"),
+    ("npmrc_pypirc", re.compile(r"(?:^|/)\.(?:npmrc|pypirc)$"), "Probes package registry token file (.npmrc/.pypirc)"),
+    ("docker_config", re.compile(r"(?:^|/)\.docker/config\.json$"), "Probes Docker registry credentials"),
     ("kube_config", re.compile(r"(?:^|/)\.kube/config$"), "Probes Kubernetes config"),
 ]
 
@@ -508,7 +517,8 @@ def parse_connector_denials(stdout_text: str, stderr_text: str, probe_urls: list
             or "HTTP_STATUS:403" in line
         ):
             urls = RE_URL.findall(line)
-            url = urls[0] if urls else f"https://api.sprites.dev/v1/gateway/github/{GITHUB_CONNECTOR_ID}/user/repos"
+            conn_label = GITHUB_CONNECTOR_ID or "<connector>"
+            url = urls[0] if urls else f"https://api.sprites.dev/v1/gateway/github/{conn_label}/user/repos"
             if url not in seen_urls:
                 seen_urls.add(url)
                 denials.append(
@@ -653,6 +663,8 @@ def compute_risk_and_verdict(
     prompt_injections: list[dict[str, Any]],
     mcp_tool_poisoning: list[dict[str, Any]] | None = None,
     detonation_timeouts: list[dict[str, Any]] | None = None,
+    *,
+    skill_block_count: int | None = None,
 ) -> dict[str, Any]:
     score = 0
     reasons: list[str] = []
@@ -743,6 +755,11 @@ def compute_risk_and_verdict(
         score += pts
         reasons.append(f"Detonation timeout hit (exit code 124; possible sleep/evasion) [+{pts}]")
 
+    if skill_block_count == 0 and score < 20 and not high_severity:
+        pts = 25
+        score += pts
+        reasons.append(f"No runnable code blocks found in SKILL.md / URL (static-only scan) [+{pts}]")
+
     final_score = min(100, score)
     if final_score >= 50 or high_severity:
         verdict = "BLOCK"
@@ -799,13 +816,24 @@ def extract_all_iocs(run_dir: Path) -> dict[str, Any]:
             }
         )
 
+    skill_block_count = None
+    if isinstance(detonation_meta, dict) and detonation_meta.get("mode") == "skill":
+        raw_cnt = detonation_meta.get("skill_block_count")
+        if isinstance(raw_cnt, int):
+            skill_block_count = raw_cnt
+
     scoring = compute_risk_and_verdict(
         strace_data,
         connector_denials,
         prompt_injections,
         mcp_tool_poisoning,
         detonation_timeouts=detonation_timeouts,
+        skill_block_count=skill_block_count,
     )
+
+    non_dns_connects = [
+        c for c in strace_data["network_connects"] if c.get("classification") not in ("dns_resolver", "loopback")
+    ]
 
     result: dict[str, Any] = {
         "schema_version": "blastbox-iocs-v2",
@@ -815,7 +843,7 @@ def extract_all_iocs(run_dir: Path) -> dict[str, Any]:
             "total_strace_lines": strace_data["total_strace_lines"],
             "sensitive_file_probes": len(strace_data["sensitive_file_probes"]),
             "unexpected_writes": len(strace_data["unexpected_writes"]),
-            "network_connects": len(strace_data["network_connects"]),
+            "network_connects": len(non_dns_connects),
             "dns_queries": len(strace_data["dns_queries"]),
             "probe_urls": len(strace_data["probe_urls"]),
             "notable_subprocesses": len(strace_data["notable_subprocesses"]),

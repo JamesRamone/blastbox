@@ -105,17 +105,38 @@ def setup_dashboard(
     public_url: str = DEFAULT_PUBLIC_URL,
     create_checkpoint: bool = False,
 ) -> dict[str, Any]:
-    history = load_or_init_history(history_path, sprite_name=sprite, public_url=public_url)
+    public_url = public_url or config.detect_sprite_url(sprite)
+    if not public_url:
+        raise RuntimeError(f"Could not determine public URL for controller Sprite '{sprite}'. Set BLASTBOX_PUBLIC_URL.")
 
     server_local = SCRIPT_DIR / "web" / "server.py"
     run_local = SCRIPT_DIR / "web" / "run.sh"
+    config_local = SCRIPT_DIR / "config.py"
     if not server_local.exists() or not run_local.exists():
         raise FileNotFoundError("Missing web/server.py or web/run.sh")
 
     _run([config.SPRITE_BIN, "exec", "-s", sprite, "--no-stdin", "--", "bash", "-c", "mkdir -p /home/sprite/blastbox-web/assets"])
     _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(server_local), "/home/sprite/blastbox-web/server.py"])
     _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(run_local), "/home/sprite/blastbox-web/run.sh"])
-    _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(history_path), "/home/sprite/blastbox-web/history.json"])
+    _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(config_local), "/home/sprite/blastbox-web/config.py"])
+    dotenv_local = SCRIPT_DIR / ".env"
+    if dotenv_local.is_file():
+        _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(dotenv_local), "/home/sprite/blastbox-web/.env"])
+
+    if history_path.exists():
+        history = load_or_init_history(history_path, sprite_name=sprite, public_url=public_url)
+        _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(history_path), "/home/sprite/blastbox-web/history.json"])
+    else:
+        has_remote = _run(
+            [config.SPRITE_BIN, "exec", "-s", sprite, "--no-stdin", "--", "bash", "-c", "test -f /home/sprite/blastbox-web/history.json && echo YES || echo NO"],
+            check=True,
+        )
+        if "YES" in has_remote.stdout:
+            pulled = _run([config.SPRITE_BIN, "file", "pull", "-s", sprite, "/home/sprite/blastbox-web/history.json", str(history_path)], check=False)
+            history = load_or_init_history(history_path, sprite_name=sprite, public_url=public_url) if pulled.returncode == 0 else {"runs": []}
+        else:
+            history = load_or_init_history(history_path, sprite_name=sprite, public_url=public_url)
+            _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(history_path), "/home/sprite/blastbox-web/history.json"])
     turkey_asset = SCRIPT_DIR / "docs" / "hacksgiving-turkey.png"
     if turkey_asset.is_file():
         _run(

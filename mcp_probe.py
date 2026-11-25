@@ -261,9 +261,14 @@ def run_probe(
 
         if proc.stdin:
             proc.stdin.close()
-        rc = proc.wait(timeout=15)
-        if rc != 0:
-            raise RuntimeError(f"MCP server exited with non-zero code {rc}")
+        try:
+            rc = proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = -1
+            server_err = "MCP server timed out during shutdown wait"
+        else:
+            server_err = f"MCP server exited with non-zero code {rc}" if rc != 0 else None
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -273,6 +278,8 @@ def run_probe(
     transcript = {
         "server_entrypoint": entrypoint,
         "server_name": server_name,
+        "server_exit_code": rc,
+        "server_error": server_err,
         "initialize": init_result,
         "tools_list": tools_list,
         "resources_list": resources_list,

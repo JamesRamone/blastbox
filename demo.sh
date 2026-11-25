@@ -2,10 +2,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${SCRIPT_DIR}/.env"
+  set +a
+fi
+
 CONTROLLER_SPRITE="${BLASTBOX_CONTROLLER_SPRITE:-${BLASTBOX_SPRITE:-blastbox}}"
 DETONATOR_SPRITE="${BLASTBOX_DETONATOR_SPRITE:-blastbox-detonator}"
-REPO="${BLASTBOX_REPO:-JamesRamone/hacksgiving-blastbox-demo}"
-PUBLIC_URL="${BLASTBOX_PUBLIC_URL:-https://blastbox-3xb.sprites.app}"
+REPO="${BLASTBOX_REPO:-}"
+PUBLIC_URL="${BLASTBOX_PUBLIC_URL:-}"
 
 usage() {
   cat <<'EOF'
@@ -21,11 +28,11 @@ Options:
   --all             Run all 6 scenarios sequentially
   -h, --help        Show this help message and exit
 
-Environment overrides:
+Environment overrides (or set in .env):
   BLASTBOX_CONTROLLER_SPRITE  Controller Sprite name (default: blastbox)
   BLASTBOX_DETONATOR_SPRITE   Air-gapped Detonator Sprite name (default: blastbox-detonator)
-  BLASTBOX_REPO               Target GitHub owner/repo (default: JamesRamone/hacksgiving-blastbox-demo)
-  BLASTBOX_PUBLIC_URL         Public dashboard URL (default: https://blastbox-3xb.sprites.app)
+  BLASTBOX_REPO               Target GitHub owner/repo
+  BLASTBOX_PUBLIC_URL         Public dashboard URL (auto-detected if omitted)
 EOF
 }
 
@@ -77,7 +84,7 @@ print(f"Deterministic Verdict:      {s['deterministic_verdict']} (risk_score={s[
 print(f"Agent Probe Plan:           {plan.get('targets')} via {plan.get('planner_source')}")
 print(f"AI Triage Verdict:          {s['llm_recommended_verdict']} via {s['openrouter_model']}")
 print(f"Prompt-Injection Resisted:  {s['prompt_injection_resisted']} (detected={s.get('prompt_injection_detected')})")
-print(f"Zero-Secret VM Proof:       {s['zero_secrets_verified']}")
+print(f"Zero API Tokens Proof:      {s['zero_secrets_verified']}")
 print(f"Connector 403 Policy Proof: HTTP {s['policy_403_status']} (blocked={s['policy_403_verified']})")
 print(
     f"IOC Counts:                 sensitive_files={counts['sensitive_file_probes']}, "

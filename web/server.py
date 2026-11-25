@@ -21,15 +21,47 @@ from pathlib import Path
 from typing import Any
 
 APP_DIR = Path(__file__).resolve().parent
+
+
+def _load_dotenv_if_present() -> None:
+    for candidate in (APP_DIR / ".env", APP_DIR.parent / ".env"):
+        if not candidate.is_file():
+            continue
+        try:
+            for raw_line in candidate.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+        except OSError:
+            pass
+        break
+
+
+_load_dotenv_if_present()
+
+
+def _env_val(name: str, default: str = "") -> str:
+    val = (os.environ.get(name) or "").strip()
+    if val.startswith("<") and val.endswith(">"):
+        return ""
+    return val or default
+
+
 HISTORY_PATH = Path(os.environ.get("BLASTBOX_HISTORY_PATH", str(APP_DIR / "history.json")))
 AGENT_STATUS_PATH = Path(os.environ.get("BLASTBOX_AGENT_STATUS_PATH", str(APP_DIR / "agent_status.json")))
 PORT = int(os.environ.get("PORT", "8080"))
 
-GITHUB_CONNECTOR_ID = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID") or "<github-connector-id>"
-OPENROUTER_CONNECTOR_ID = os.environ.get("BLASTBOX_OPENROUTER_CONNECTOR_ID") or "<openrouter-connector-id>"
-SLACK_CONNECTOR_ID = os.environ.get("BLASTBOX_SLACK_CONNECTOR_ID") or "<slack-connector-id>"
-DEFAULT_DETONATOR = os.environ.get("BLASTBOX_DETONATOR_SPRITE") or "blastbox-detonator"
-DEFAULT_PUBLIC_URL = os.environ.get("BLASTBOX_PUBLIC_URL") or "https://blastbox-3xb.sprites.app"
+GITHUB_CONNECTOR_ID = _env_val("BLASTBOX_GITHUB_CONNECTOR_ID")
+OPENROUTER_CONNECTOR_ID = _env_val("BLASTBOX_OPENROUTER_CONNECTOR_ID")
+SLACK_CONNECTOR_ID = _env_val("BLASTBOX_SLACK_CONNECTOR_ID")
+SLACK_CHANNEL_LABEL = _env_val("BLASTBOX_SLACK_CHANNEL_LABEL", "#blastbox")
+DEFAULT_DETONATOR = _env_val("BLASTBOX_DETONATOR_SPRITE", "blastbox-detonator")
+DEFAULT_PUBLIC_URL = _env_val("BLASTBOX_PUBLIC_URL")
 ASSETS_DIR = Path(os.environ.get("BLASTBOX_ASSETS_DIR", str(APP_DIR / "assets")))
 ALLOWED_ASSETS: dict[str, tuple[Path, str]] = {
     "/assets/hacksgiving-turkey.png": (ASSETS_DIR / "hacksgiving-turkey.png", "image/png"),
@@ -94,8 +126,8 @@ SIGNAL_SPECS: tuple[tuple[str, str], ...] = (
     ("dns_queries", "DNS queries"),
     ("notable_subprocesses", "Notable subprocesses"),
     ("connector_policy_denials", "Connector / gateway blocks"),
-    ("prompt_injection_signals", "Doc / prompt injection"),
-    ("mcp_tool_poisoning", "MCP / SKILL poisoning"),
+    ("prompt_injection_signals", "Doc / SKILL prompt injection"),
+    ("mcp_tool_poisoning", "MCP metadata poisoning"),
 )
 
 FINDING_PTS_RE = re.compile(r"\s*\[\+(\d+)\]\s*$")
@@ -167,7 +199,12 @@ def load_agent_status() -> dict[str, Any] | None:
     try:
         raw = json.loads(AGENT_STATUS_PATH.read_text(encoding="utf-8"))
         if isinstance(raw, dict):
-            return _sanitize_obj(raw)
+            cleaned = _sanitize_obj(raw)
+            raw_channels = cleaned.pop("slack_channels", None)
+            if "slack_channels_count" not in cleaned and isinstance(raw_channels, list):
+                cleaned["slack_channels_count"] = len(raw_channels)
+            cleaned.setdefault("slack_channel_label", SLACK_CHANNEL_LABEL)
+            return cleaned
     except (OSError, json.JSONDecodeError):
         pass
     return None
@@ -273,6 +310,14 @@ def _normalize_run(run: dict[str, Any]) -> dict[str, Any]:
     target_url = str(run.get("target_url") or "")
     gh_url = str(run.get("github_artifact_url") or "")
     raw_gh_status = run.get("github_publish_status")
+    trigger_raw = str(run.get("trigger") or "").strip().lower()
+    if not trigger_raw:
+        if kind_raw == "pr" and gh_url:
+            trigger_raw = "pr-watcher"
+        elif kind_raw == "skill":
+            trigger_raw = "slack" if "slack" in str(run.get("target_label") or "").lower() else "cli"
+        else:
+            trigger_raw = "cli"
     wall_num = _safe_float(run.get("wall_seconds"))
     wall_display = f"{wall_num:.2f}".rstrip("0").rstrip(".") if wall_num is not None else "n/a"
 
@@ -294,6 +339,7 @@ def _normalize_run(run: dict[str, Any]) -> dict[str, Any]:
         "timestamp_utc": str(run.get("timestamp_utc") or ""),
         "timestamp_short": _format_utc(run.get("timestamp_utc"), short=True),
         "timestamp_full": _format_utc(run.get("timestamp_utc"), short=False),
+        "trigger": trigger_raw,
         "target_kind": kind_raw,
         "target_kind_label": _kind_display(kind_raw),
         "target_label": str(run.get("target_label") or "Unknown target"),
@@ -331,12 +377,20 @@ def _normalize_run(run: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _trigger_display(trigger: str) -> str:
+    if trigger == "slack":
+        return "Triggered via Slack"
+    if trigger == "pr-watcher":
+        return "Autonomous PR watcher"
+    return "CLI / Console audit"
+
+
 def _render_dossier_html(run: dict[str, Any] | None) -> str:
     if run is None:
         return (
             '<div class="dossier-empty">'
             "<h3>No detonation selected</h3>"
-            "<p>Run <code>./demo.sh</code>, <code>./demo.sh --clean-pr</code>, or <code>./demo.sh --mcp</code> to record an audit run and inspect its kernel telemetry here.</p>"
+            "<p>Run <code>./demo.sh</code> or post <code>@blastbox boom</code> in Slack to record an audit run and inspect its syscall telemetry here.</p>"
             "</div>"
         )
 
@@ -360,7 +414,7 @@ def _render_dossier_html(run: dict[str, Any] | None) -> str:
         )
         gh_proof = f"HTTP {html.escape(gh_status)}" if gh_status is not None else "Published"
     elif gh_status is None:
-        action_html = '<span class="dossier-action-muted">Console / Slack audit</span>'
+        action_html = f'<span class="dossier-action-muted">{html.escape(_trigger_display(run["trigger"]))}</span>'
         gh_proof = ""
     else:
         action_html = f'<span class="dossier-action-muted">HTTP {html.escape(gh_status)}</span>'
@@ -415,16 +469,22 @@ def _render_dossier_html(run: dict[str, Any] | None) -> str:
         )
 
     findings_items: list[str] = []
+    findings_pts_sum = 0
     for raw_item in run["top_findings"]:
         body_text, pts = _split_finding_points(raw_item)
+        if pts:
+            m_pts = re.search(r"(\d+)", pts)
+            if m_pts:
+                findings_pts_sum += int(m_pts.group(1))
         pts_html = f'<span class="finding-pts">{html.escape(pts)}</span>' if pts else ""
         findings_items.append(
             f'<li class="finding-row"><span class="finding-text">{html.escape(body_text)}</span>{pts_html}</li>'
         )
     if not findings_items:
         findings_items.append(
-            '<li class="finding-row"><span class="finding-text">No out-of-policy kernel, filesystem, or metadata signals recorded.</span></li>'
+            '<li class="finding-row"><span class="finding-text">No out-of-policy syscall, filesystem, or metadata signals recorded.</span></li>'
         )
+    cap_note = " (capped)" if score >= 100 and findings_pts_sum > 100 else ""
 
     rollback_cls = "proof-ok" if run["rollback_verified"] else "proof-alert"
     fs_created_cnt = len(run["fs_created_during_detonation"])
@@ -450,7 +510,7 @@ def _render_dossier_html(run: dict[str, Any] | None) -> str:
         <div class="risk-meta">
           <div class="risk-verdict-wrap">
             <span class="status-cell {verdict_cls}">{html.escape(verdict)}</span>
-            <span class="risk-score-text">Risk score <strong>{score} / 100</strong></span>
+            <span class="risk-score-text">Risk score <strong>{score} / 100</strong>{cap_note}</span>
           </div>
           <span class="risk-duration">Duration <span class="mono">{html.escape(run['wall_seconds'])}s</span></span>
         </div>
@@ -474,11 +534,11 @@ def _render_dossier_html(run: dict[str, Any] | None) -> str:
             <dd><span class="mono">{html.escape(run['checkpoint_restored'])}</span> &middot; <span class="{rollback_cls}">{html.escape(rollback_note)}</span></dd>
           </div>
           <div class="proof-item">
-            <dt>Zero-secret VM</dt>
+            <dt>Detonator credentials</dt>
             <dd class="{zero_cls}">{zero_note}</dd>
           </div>
           <div class="proof-item">
-            <dt>Controller policy</dt>
+            <dt>Connector least-privilege</dt>
             <dd class="mono">HTTP {html.escape(run['policy_403_status'])} on /user/repos{f' &middot; {gh_proof}' if gh_proof else ''}</dd>
           </div>
           <div class="proof-item">
@@ -489,7 +549,7 @@ def _render_dossier_html(run: dict[str, Any] | None) -> str:
       </div>
 
       <div class="dossier-band">
-        <h4 class="band-title">Deterministic kernel and metadata signals</h4>
+        <h4 class="band-title">Deterministic syscall (strace) and metadata signals</h4>
         <div class="signal-grid">
           {"".join(signal_rows_html)}
         </div>
@@ -557,25 +617,40 @@ def render_dashboard_html(
         rollback_value = "Ready"
         rollback_note = "Baseline checkpoint pending first run"
 
+    slack_label_html = html.escape(SLACK_CHANNEL_LABEL or "#blastbox")
     if isinstance(agent_status, dict):
         watched_repo = html.escape(str(agent_status.get("watched_repo") or ""))
         cli_auth = bool(agent_status.get("sprite_cli_authenticated"))
         slack_ok = bool(agent_status.get("slack_connected"))
         active_job = str(agent_status.get("active_job") or "").strip()
         if active_job:
+            agent_value = "Auditing"
+            agent_value_cls = "kpi-value"
             agent_note = html.escape(active_job)
         elif cli_auth and slack_ok:
-            agent_note = f"Watching {watched_repo} and Slack #blastbox"
+            agent_value = "Online"
+            agent_value_cls = "kpi-value kpi-ok"
+            if watched_repo:
+                agent_note = f"Watching {watched_repo} + Slack {slack_label_html}"
+            else:
+                agent_note = f"Slack {slack_label_html} ready (3 Connectors active)"
         elif cli_auth:
-            agent_note = f"Watching {watched_repo} (autonomous control active)"
+            agent_value = "Online"
+            agent_value_cls = "kpi-value kpi-ok"
+            agent_note = f"Watching {watched_repo}" if watched_repo else "Autonomous control active"
         else:
-            agent_note = f"Watching {watched_repo} (awaiting controller sprite login)"
+            agent_value = "Auth needed"
+            agent_value_cls = "kpi-value"
+            agent_note = f"Run sprite login inside {sprite_name}"
     else:
-        agent_note = f"Unlabeled {detonator_name}, deny-all egress, 0 tokens"
+        agent_value = "Standby"
+        agent_value_cls = "kpi-value"
+        agent_note = "Controller polling status pending"
 
+    default_idx = next((i for i, r in enumerate(runs) if r["verdict"] == "BLOCK"), 0) if runs else -1
     ledger_rows: list[str] = []
     for idx, run in enumerate(runs):
-        is_active = idx == 0
+        is_active = idx == default_idx
         row_cls = "run-row is-active" if is_active else "run-row"
         aria_sel = "true" if is_active else "false"
         verdict = run["verdict"]
@@ -620,11 +695,11 @@ def render_dashboard_html(
         ledger_body = ""
         ledger_empty_hidden = ""
 
-    initial_dossier = _render_dossier_html(runs[0] if runs else None)
+    initial_dossier = _render_dossier_html(runs[default_idx] if default_idx >= 0 else None)
     runs_json_safe = _safe_json_for_script(runs)
 
     secret_status_cls = "nav-status-ok" if zero_secrets_ok else "nav-status-alert"
-    secret_status_text = "Zero-secret VM" if zero_secrets_ok else "Secret env alert"
+    secret_status_text = "Zero API tokens" if zero_secrets_ok else "Secret env alert"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1598,7 +1673,7 @@ def render_dashboard_html(
       <div class="console-title-row">
         <h1>Isolated PR, MCP, and SKILL.md detonation</h1>
         <p class="console-desc">
-          Untrusted pull requests, stdio MCP servers, and agent <code>SKILL.md</code> packages triggered directly or via Slack <code>@blastbox boom</code> detonate inside an unlabeled, deny-all egress Fly.io Sprite under kernel strace, rewind to a clean overlay checkpoint, and receive zero-secret triage from the controller Sprite.
+          Detonates untrusted pull requests, stdio MCP servers, and <code>SKILL.md</code> files inside an isolated, deny-all egress Fly.io Sprite under strace, rewinds every change via overlay checkpoint, and publishes verifiable triage.
         </p>
       </div>
       <div class="kpi-strip" role="region" aria-label="Isolation and detonation summary">
@@ -1610,12 +1685,12 @@ def render_dashboard_html(
         <div class="kpi-cell">
           <div class="kpi-label">Detonator sandbox</div>
           <div class="kpi-value kpi-ok">Air-gapped</div>
-          <div class="kpi-note">{agent_note}</div>
+          <div class="kpi-note">Unlabeled {detonator_name}, deny-all egress, 0 credentials</div>
         </div>
         <div class="kpi-cell">
-          <div class="kpi-label">Zero-secret Connectors</div>
-          <div class="kpi-value">3 active</div>
-          <div class="kpi-note">GitHub, OpenRouter, Slack (0 raw tokens)</div>
+          <div class="kpi-label">Controller agent</div>
+          <div class="{agent_value_cls}">{agent_value}</div>
+          <div class="kpi-note">{agent_note}</div>
         </div>
         <div class="kpi-cell">
           <div class="kpi-label">Overlay rollback</div>
@@ -1685,10 +1760,10 @@ def render_dashboard_html(
         <figcaption class="arch-figure-caption">
           <h3>Hacksgiving detonation and rewind</h3>
           <p>
-            The controller Sprite watches GitHub PRs and Slack <code>#blastbox</code>, detonates untrusted payloads behind an armored deny-all network wall on <code>{detonator_name}</code>, and rewinds the overlay checkpoint back to clean steel.
+            The controller Sprite watches GitHub PRs and Slack <code>{slack_label_html}</code>, detonates untrusted payloads inside network-isolated <code>{detonator_name}</code>, and rewinds the overlay checkpoint to its golden baseline.
           </p>
           <p class="arch-steps-note">
-            1. Preflight &amp; checkpoint &middot; 2. Plan &amp; strace detonation &middot; 3. Overlay rewind &amp; zero-secret triage
+            1. Preflight &amp; checkpoint &middot; 2. Plan &amp; strace detonation &middot; 3. Overlay rewind &amp; triage
           </p>
           <ul class="arch-slack-list">
             <li><code class="nowrap">@blastbox boom poisoned-skill</code></li>
@@ -1717,7 +1792,7 @@ def render_dashboard_html(
             <tr>
               <td><span class="mono">{detonator_name}</span> (Detonator)</td>
               <td>Zero labels (Connectors denied), <code class="nowrap">* -&gt; deny</code> egress</td>
-              <td>Runs untrusted code; rewound via <code class="nowrap">sprite restore</code> and generic FS diff</td>
+              <td>Runs untrusted code with 0 credentials; rewound via <code class="nowrap">sprite restore</code> and FS diff</td>
             </tr>
           </tbody>
         </table>
@@ -1726,7 +1801,7 @@ def render_dashboard_html(
 
     <footer>
       <div>
-        Blastbox on Fly.io Sprites (<span class="mono">{sprite_name}</span> -&gt; <span class="mono">{detonator_name}</span>) &middot; Connectors: GitHub <span class="mono">{html.escape(GITHUB_CONNECTOR_ID)}</span>, OpenRouter <span class="mono">{html.escape(OPENROUTER_CONNECTOR_ID)}</span>, Slack <span class="mono">{html.escape(SLACK_CONNECTOR_ID)}</span>
+        Blastbox on Fly.io Sprites (<span class="mono">{sprite_name}</span> -&gt; <span class="mono">{detonator_name}</span>) &middot; Zero third-party API tokens on VM (GitHub, OpenRouter, Slack Connectors)
       </div>
       <div class="footer-links">
         <a href="/api/runs">/api/runs</a>
@@ -1765,8 +1840,8 @@ def render_dashboard_html(
         ["dns_queries", "DNS queries"],
         ["notable_subprocesses", "Notable subprocesses"],
         ["connector_policy_denials", "Connector / gateway blocks"],
-        ["prompt_injection_signals", "Doc / prompt injection"],
-        ["mcp_tool_poisoning", "MCP / SKILL poisoning"]
+        ["prompt_injection_signals", "Doc / SKILL prompt injection"],
+        ["mcp_tool_poisoning", "MCP metadata poisoning"]
       ];
 
       function escapeHtml(val) {{
@@ -1820,7 +1895,8 @@ def render_dashboard_html(
           actionHtml = '<a class="primary-action" href="' + escapeHtml(run.github_artifact_url) + '" target="_blank" rel="noopener">Open GitHub report</a>';
           ghProof = run.github_publish_status != null ? "HTTP " + escapeHtml(run.github_publish_status) : "Published";
         }} else if (run.github_publish_status == null) {{
-          actionHtml = '<span class="dossier-action-muted">Console / Slack audit</span>';
+          var trigText = run.trigger === "slack" ? "Triggered via Slack" : (run.trigger === "pr-watcher" ? "Autonomous PR watcher" : "CLI / Console audit");
+          actionHtml = '<span class="dossier-action-muted">' + escapeHtml(trigText) + '</span>';
           ghProof = "";
         }} else {{
           actionHtml = '<span class="dossier-action-muted">HTTP ' + escapeHtml(run.github_publish_status) + '</span>';
@@ -1859,17 +1935,23 @@ def render_dashboard_html(
 
         var findings = Array.isArray(run.top_findings) ? run.top_findings : [];
         var findingsHtml = "";
+        var findingsPtsSum = 0;
         if (findings.length === 0) {{
-          findingsHtml = '<li class="finding-row"><span class="finding-text">No out-of-policy kernel, filesystem, or metadata signals recorded.</span></li>';
+          findingsHtml = '<li class="finding-row"><span class="finding-text">No out-of-policy syscall, filesystem, or metadata signals recorded.</span></li>';
         }} else {{
           for (var f = 0; f < findings.length; f++) {{
             var split = splitFindingPoints(findings[f]);
+            if (split.pts) {{
+              var ptsMatch = split.pts.match(/(\\d+)/);
+              if (ptsMatch) findingsPtsSum += Number(ptsMatch[1]);
+            }}
             findingsHtml +=
               '<li class="finding-row"><span class="finding-text">' + escapeHtml(split.text) + '</span>' +
               (split.pts ? '<span class="finding-pts">' + escapeHtml(split.pts) + '</span>' : '') +
               '</li>';
           }}
         }}
+        var capNote = (score >= 100 && findingsPtsSum > 100) ? " (capped)" : "";
 
         var fsCreated = Array.isArray(run.fs_created_during_detonation) ? run.fs_created_during_detonation.length : 0;
         var rollbackCls = run.rollback_verified ? "proof-ok" : "proof-alert";
@@ -1909,7 +1991,7 @@ def render_dashboard_html(
             '<div class="risk-meta">' +
               '<div class="risk-verdict-wrap">' +
                 '<span class="status-cell ' + vCls + '">' + escapeHtml(run.verdict) + '</span>' +
-                '<span class="risk-score-text">Risk score <strong>' + score + ' / 100</strong></span>' +
+                '<span class="risk-score-text">Risk score <strong>' + score + ' / 100</strong>' + capNote + '</span>' +
               '</div>' +
               '<span class="risk-duration">Duration <span class="mono">' + escapeHtml(run.wall_seconds) + 's</span></span>' +
             '</div>' +
@@ -1922,13 +2004,13 @@ def render_dashboard_html(
               '<div class="proof-item"><dt>Run ID</dt><dd class="mono">' + escapeHtml(run.run_id) + '</dd></div>' +
               '<div class="proof-item"><dt>Detonator sandbox</dt><dd class="mono">' + escapeHtml(run.detonator_isolation) + '</dd></div>' +
               '<div class="proof-item"><dt>Filesystem rollback</dt><dd><span class="mono">' + escapeHtml(run.checkpoint_restored) + '</span> &middot; <span class="' + rollbackCls + '">' + escapeHtml(rollbackNote) + '</span></dd></div>' +
-              '<div class="proof-item"><dt>Zero-secret VM</dt><dd class="' + zeroCls + '">' + zeroNote + '</dd></div>' +
-              '<div class="proof-item"><dt>Controller policy</dt><dd class="mono">HTTP ' + escapeHtml(run.policy_403_status) + ' on /user/repos' + (ghProof ? ' &middot; ' + ghProof : '') + '</dd></div>' +
+              '<div class="proof-item"><dt>Detonator credentials</dt><dd class="' + zeroCls + '">' + zeroNote + '</dd></div>' +
+              '<div class="proof-item"><dt>Connector least-privilege</dt><dd class="mono">HTTP ' + escapeHtml(run.policy_403_status) + ' on /user/repos' + (ghProof ? ' &middot; ' + ghProof : '') + '</dd></div>' +
               '<div class="proof-item"><dt>Syscalls traced</dt><dd class="mono">' + escapeHtml(syscalls) + '</dd></div>' +
             '</dl>' +
           '</div>' +
           '<div class="dossier-band">' +
-            '<h4 class="band-title">Deterministic kernel and metadata signals</h4>' +
+            '<h4 class="band-title">Deterministic syscall (strace) and metadata signals</h4>' +
             '<div class="signal-grid">' + signalsHtml + '</div>' +
           '</div>' +
           '<div class="dossier-band">' +
@@ -1952,12 +2034,18 @@ def render_dashboard_html(
 
       var activeKind = "all";
       var activeRunId = runs.length ? runs[0].run_id : "";
+      for (var d = 0; d < runs.length; d++) {{
+        if (runs[d] && runs[d].verdict === "BLOCK") {{
+          activeRunId = runs[d].run_id;
+          break;
+        }}
+      }}
 
       function getAllRows() {{
         return Array.prototype.slice.call(ledgerBody.querySelectorAll("tr.run-row"));
       }}
 
-      function selectRun(runId, focusRow) {{
+      function selectRun(runId, focusRow, updateHash) {{
         activeRunId = runId;
         var rows = getAllRows();
         for (var i = 0; i < rows.length; i++) {{
@@ -1967,6 +2055,9 @@ def render_dashboard_html(
           if (matched && focusRow) rows[i].focus();
         }}
         renderDossier(runsById[runId] || null);
+        if (updateHash && runId && window.history && window.history.replaceState) {{
+          window.history.replaceState(null, "", "#run=" + encodeURIComponent(runId));
+        }}
       }}
 
       function applyFilters() {{
@@ -2000,7 +2091,7 @@ def render_dashboard_html(
       ledgerBody.addEventListener("click", function (ev) {{
         var row = ev.target && ev.target.closest ? ev.target.closest("tr.run-row") : null;
         if (!row) return;
-        selectRun(row.getAttribute("data-run-id"), false);
+        selectRun(row.getAttribute("data-run-id"), false, true);
       }});
 
       ledgerBody.addEventListener("keydown", function (ev) {{
@@ -2010,13 +2101,13 @@ def render_dashboard_html(
         var idx = visibleRows.indexOf(row);
         if (ev.key === "Enter" || ev.key === " ") {{
           ev.preventDefault();
-          selectRun(row.getAttribute("data-run-id"), false);
+          selectRun(row.getAttribute("data-run-id"), false, true);
         }} else if (ev.key === "ArrowDown" && idx >= 0 && idx < visibleRows.length - 1) {{
           ev.preventDefault();
-          selectRun(visibleRows[idx + 1].getAttribute("data-run-id"), true);
+          selectRun(visibleRows[idx + 1].getAttribute("data-run-id"), true, true);
         }} else if (ev.key === "ArrowUp" && idx > 0) {{
           ev.preventDefault();
-          selectRun(visibleRows[idx - 1].getAttribute("data-run-id"), true);
+          selectRun(visibleRows[idx - 1].getAttribute("data-run-id"), true, true);
         }}
       }});
 
@@ -2031,6 +2122,36 @@ def render_dashboard_html(
       }});
 
       if (verdictSelect) verdictSelect.addEventListener("change", applyFilters);
+
+      function selectFromHash() {{
+        var hash = window.location.hash || "";
+        if (hash.indexOf("#run=") === 0) {{
+          var targetId = decodeURIComponent(hash.slice(5));
+          if (runsById[targetId]) {{
+            selectRun(targetId, false, false);
+          }}
+        }}
+      }}
+      selectFromHash();
+      window.addEventListener("hashchange", selectFromHash);
+
+      if (window.fetch) {{
+        var initialCount = runs.length;
+        var initialTopId = runs.length ? runs[0].run_id : "";
+        window.setInterval(function () {{
+          window.fetch("/api/runs", {{ cache: "no-store" }})
+            .then(function (resp) {{ return resp.ok ? resp.json() : null; }})
+            .then(function (payload) {{
+              if (!payload || !Array.isArray(payload.runs)) return;
+              var nextCount = payload.runs.length;
+              var nextTopId = nextCount ? payload.runs[nextCount - 1].run_id : "";
+              if (nextCount !== initialCount || nextTopId !== initialTopId) {{
+                window.location.reload();
+              }}
+            }})
+            .catch(function () {{}});
+        }}, 15000);
+      }}
     }})();
   </script>
 </body>
@@ -2089,9 +2210,9 @@ class BlastboxHandler(BaseHTTPRequestHandler):
                 "runs_count": len(history.get("runs", [])),
                 "zero_secrets_in_env": zero_secrets_ok,
                 "connectors": {
-                    "github": GITHUB_CONNECTOR_ID,
-                    "openrouter": OPENROUTER_CONNECTOR_ID,
-                    "slack_bot": SLACK_CONNECTOR_ID,
+                    "github": bool(GITHUB_CONNECTOR_ID),
+                    "openrouter": bool(OPENROUTER_CONNECTOR_ID),
+                    "slack_bot": bool(SLACK_CONNECTOR_ID),
                 },
                 "updated_at": history.get("updated_at"),
                 "agent": agent_status,
