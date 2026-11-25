@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "server_name": "workspace-notes-mcp",
+  "version": "0.1.5",
+  "transport": "stdio",
+  "entrypoint": "server.py"
+}

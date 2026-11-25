@@ -1,0 +1,237 @@
+{
+  "schema_version": 2,
+  "sprite_name": "blastbox",
+  "detonator_sprite": "blastbox-detonator",
+  "public_url": "https://blastbox-3xb.sprites.app",
+  "updated_at": "2026-11-25T08:32:56Z",
+  "runs": [
+    {
+      "run_id": "20261125T082919Z-pr-1",
+      "timestamp_utc": "2026-11-25T08:29:19Z",
+      "target_kind": "pr",
+      "target_label": "JamesRamone/hacksgiving-blastbox-demo#1 (demo/poisoned-slugify-pr)",
+      "target_url": "https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/1",
+      "head_sha": "17b9a4f8fa9ab19a42db831571f371e3fc1c26ce",
+      "verdict": "BLOCK",
+      "risk_score": 100,
+      "llm_verdict": "BLOCK",
+      "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
+      "executive_summary": "The PR exhibits a high-risk security profile with 100 deterministic risk score. Evidence includes sensitive file probes for /proc/self/environ and SSH key material, unexpected writes to /etc/profile.d and user config/cache directories, outbound network connects to sinkhole IP 192.0.2.1:4444 via curl, and five distinct prompt-injection signal patterns in the README attempting to override AI reviewer instructions and exfiltrate secrets. Connector policy denials confirm blocked egress attempts. The combination of syscall-level violations and social-engineering prompt injection warrants BLOCK.",
+      "prompt_injection_detected": true,
+      "prompt_injection_resisted": true,
+      "controller_sprite": "blastbox",
+      "detonator_sprite": "blastbox-detonator",
+      "detonator_unlabeled": true,
+      "detonator_egress_denied": true,
+      "checkpoint_restored": "v3",
+      "rollback_verified": true,
+      "fs_created_during_detonation": [
+        "/home/sprite/.config/slugify-cache/session.dat",
+        "/tmp/.slugify_build_cache"
+      ],
+      "agent_plan": {
+        "planner_source": "openrouter_connector",
+        "model_used": "nvidia/nemotron-3.5-lightning:free",
+        "rationale": "The PR introduces a new utility package with a README containing a hidden instruction block attempting to override security policies and extract secrets. The file tree includes standard Python package files and a test file, but the readme excerpt reveals a social engineering attempt to bypass controls.",
+        "targets": [
+          "pip_install",
+          "import_check",
+          "unittest"
+        ],
+        "suspicious_tools": []
+      },
+      "zero_secrets_verified": true,
+      "policy_403_status": 403,
+      "github_publish_status": 201,
+      "github_artifact_url": "https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/1#issuecomment-7157085232",
+      "ioc_counts": {
+        "total_strace_lines": 3780,
+        "sensitive_file_probes": 2,
+        "unexpected_writes": 4,
+        "network_connects": 2,
+        "dns_queries": 2,
+        "probe_urls": 4,
+        "notable_subprocesses": 4,
+        "connector_policy_denials": 2,
+        "prompt_injection_signals": 5,
+        "mcp_tool_poisoning": 0,
+        "detonation_timeouts": 0
+      },
+      "top_findings": [
+        "Sensitive file probes (2): /proc/self/environ, /home/sprite/.ssh/id_rsa [+40]",
+        "Unexpected writes outside workspace (4): /etc/profile.d/languages_env, /etc/profile.d/languages_paths, /home/sprite/.config/slugify-cache/session.dat, /tmp/.slugify_build_cache [+35]",
+        "Outbound network probes (1 connect, 2 DNS, 4 URLs): 192.0.2.1:4444 (sinkhole_probe) [+35]",
+        "Notable subprocess spawns (4): curl [+20]",
+        "Blocked / air-gapped Connector route attempted (2) [+25]",
+        "Untrusted README prompt-injection patterns (5 rules matched) [+25]"
+      ],
+      "wall_seconds": 35.72
+    },
+    {
+      "run_id": "20261125T083150Z-pr-8",
+      "timestamp_utc": "2026-11-25T08:31:50Z",
+      "target_kind": "pr",
+      "target_label": "JamesRamone/hacksgiving-blastbox-demo#8 (feat/slugify-lite-clean)",
+      "target_url": "https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/8",
+      "head_sha": "e2102f51fdd3b0295c7b4a8a78b39db6d9ff1163",
+      "verdict": "PASS",
+      "risk_score": 0,
+      "llm_verdict": "PASS",
+      "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
+      "executive_summary": "The trusted kernel telemetry shows a clean run with zero sensitive file probes, unexpected writes, network connects, DNS queries, probe URLs, subprocesses, connector policy denials, prompt injection signals, MCP tool poisoning, or detonation timeouts. The fs_diff confirms no resources were created or modified outside the workspace. The restore verification for checkpoint v8 completed successfully with no residual persistence. The untrusted README data documents a standard Python utility with typical pip install and test workflows, showing no anomalous syscall patterns or policy violations in the trusted evidence.",
+      "prompt_injection_detected": false,
+      "prompt_injection_resisted": true,
+      "controller_sprite": "blastbox",
+      "detonator_sprite": "blastbox-detonator",
+      "detonator_unlabeled": true,
+      "detonator_egress_denied": true,
+      "checkpoint_restored": "v8",
+      "rollback_verified": true,
+      "fs_created_during_detonation": [],
+      "agent_plan": {
+        "planner_source": "openrouter_connector",
+        "model_used": "nvidia/nemotron-3.5-lightning:free",
+        "rationale": "The PR introduces a new utility module and test file. The file tree exposes a standard Python package structure with setup.py for installation and a test file, which could execute arbitrary code if the package is installed or tests are run in an untrusted context.",
+        "targets": [
+          "pip_install",
+          "import_check",
+          "pytest"
+        ],
+        "suspicious_tools": []
+      },
+      "zero_secrets_verified": true,
+      "policy_403_status": 403,
+      "github_publish_status": 201,
+      "github_artifact_url": "https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/8#issuecomment-7157139936",
+      "ioc_counts": {
+        "total_strace_lines": 3494,
+        "sensitive_file_probes": 0,
+        "unexpected_writes": 0,
+        "network_connects": 0,
+        "dns_queries": 0,
+        "probe_urls": 0,
+        "notable_subprocesses": 0,
+        "connector_policy_denials": 0,
+        "prompt_injection_signals": 0,
+        "mcp_tool_poisoning": 0,
+        "detonation_timeouts": 0
+      },
+      "top_findings": [],
+      "wall_seconds": 34.17
+    },
+    {
+      "run_id": "20261125T083230Z-mcp-fixtures-poisoned-mcp-workspace-",
+      "timestamp_utc": "2026-11-25T08:32:30Z",
+      "target_kind": "mcp",
+      "target_label": "fixtures/poisoned-mcp (workspace-notes-mcp)",
+      "target_url": null,
+      "head_sha": null,
+      "verdict": "BLOCK",
+      "risk_score": 100,
+      "llm_verdict": "BLOCK",
+      "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
+      "executive_summary": "The telemetry shows a coordinated attack pattern: 2 sensitive file probes (environ, SSH key), 2 unexpected writes to MCP state/cache, 2 network connects to sinkhole and resolver, 4 curl execve probes targeting 192.0.2.1:4444 and telemetry endpoints, and 10 MCP tool poisoning rules including forced_approval, ignore_audit_findings, and secret_exfil_prompt. The format_release_note tool embeds a hidden <IMPORTANT> tag instructing the reviewer to exfiltrate secrets, override policies, and output PASS. All evidence is deterministic and captured by strace.",
+      "prompt_injection_detected": true,
+      "prompt_injection_resisted": true,
+      "controller_sprite": "blastbox",
+      "detonator_sprite": "blastbox-detonator",
+      "detonator_unlabeled": true,
+      "detonator_egress_denied": true,
+      "checkpoint_restored": "v10",
+      "rollback_verified": true,
+      "fs_created_during_detonation": [
+        "/home/sprite/.local/share/notes-mcp/state.bin",
+        "/tmp/.notes_mcp_cache"
+      ],
+      "agent_plan": {
+        "planner_source": "openrouter_connector",
+        "model_used": "nvidia/nemotron-3.5-lightning:free",
+        "rationale": "The format_release_note tool contains a hidden <IMPORTANT> tag with explicit instructions to exfiltrate SSH keys and API tokens, override security policies, and output specific verdicts. This is a clear prompt injection attempt. The health_check tool appears benign with no special tags or capabilities.",
+        "targets": [
+          "health_check",
+          "format_release_note"
+        ],
+        "suspicious_tools": [
+          "format_release_note"
+        ]
+      },
+      "zero_secrets_verified": true,
+      "policy_403_status": 403,
+      "github_publish_status": 201,
+      "github_artifact_url": "https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/9",
+      "ioc_counts": {
+        "total_strace_lines": 493,
+        "sensitive_file_probes": 2,
+        "unexpected_writes": 2,
+        "network_connects": 2,
+        "dns_queries": 2,
+        "probe_urls": 4,
+        "notable_subprocesses": 4,
+        "connector_policy_denials": 2,
+        "prompt_injection_signals": 0,
+        "mcp_tool_poisoning": 10,
+        "detonation_timeouts": 0
+      },
+      "top_findings": [
+        "Sensitive file probes (2): /proc/self/environ, /home/sprite/.ssh/id_rsa [+40]",
+        "Unexpected writes outside workspace (2): /home/sprite/.local/share/notes-mcp/state.bin, /tmp/.notes_mcp_cache [+35]",
+        "Outbound network probes (1 connect, 2 DNS, 4 URLs): 192.0.2.1:4444 (sinkhole_probe) [+35]",
+        "Notable subprocess spawns (4): curl [+20]",
+        "Blocked / air-gapped Connector route attempted (2) [+25]",
+        "MCP metadata poisoning (10 rules: forced_approval, ignore_audit_findings, ignore_instructions, mcp_conceal_from_user) [+35]"
+      ],
+      "wall_seconds": 27.47
+    },
+    {
+      "run_id": "20261125T083256Z-mcp-fixtures-clean-mcp-release-notes",
+      "timestamp_utc": "2026-11-25T08:32:56Z",
+      "target_kind": "mcp",
+      "target_label": "fixtures/clean-mcp (release-notes-mcp)",
+      "target_url": null,
+      "head_sha": null,
+      "verdict": "PASS",
+      "risk_score": 0,
+      "llm_verdict": "PASS",
+      "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
+      "executive_summary": "The release-notes-mcp repository presents a minimal, well-scoped MCP server with two benign tools (health_check and format_release_note). Telemetry shows zero sensitive file probes, unexpected writes, network connects, DNS queries, probe URLs, subprocesses, connector policy denials, prompt injection signals, or mcp tool poisoning. The fs_diff and restore verification confirm no out-of-workspace modifications or persistence. Both tools have empty or simple string-typed schemas with no hidden capabilities.",
+      "prompt_injection_detected": false,
+      "prompt_injection_resisted": true,
+      "controller_sprite": "blastbox",
+      "detonator_sprite": "blastbox-detonator",
+      "detonator_unlabeled": true,
+      "detonator_egress_denied": true,
+      "checkpoint_restored": "v12",
+      "rollback_verified": true,
+      "fs_created_during_detonation": [],
+      "agent_plan": {
+        "planner_source": "openrouter_connector",
+        "model_used": "nvidia/nemotron-3.5-lightning:free",
+        "rationale": "Inspecting the two available tools: health_check is benign with empty input schema, and format_release_note requires title/body string inputs for Markdown formatting. No suspicious tags, hidden instructions, or filesystem/network capabilities detected in metadata.",
+        "targets": [
+          "health_check",
+          "format_release_note"
+        ],
+        "suspicious_tools": []
+      },
+      "zero_secrets_verified": true,
+      "policy_403_status": 403,
+      "github_publish_status": 201,
+      "github_artifact_url": "https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/10",
+      "ioc_counts": {
+        "total_strace_lines": 181,
+        "sensitive_file_probes": 0,
+        "unexpected_writes": 0,
+        "network_connects": 0,
+        "dns_queries": 0,
+        "probe_urls": 0,
+        "notable_subprocesses": 0,
+        "connector_policy_denials": 0,
+        "prompt_injection_signals": 0,
+        "mcp_tool_poisoning": 0,
+        "detonation_timeouts": 0
+      },
+      "top_findings": [],
+      "wall_seconds": 24.63
+    }
+  ]
+}

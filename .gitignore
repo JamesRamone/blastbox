@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*$py.class
+last_run/
+.amp/
+.env
+.pytest_cache/
+*.log
+agent_state.json
+agent_status.json
