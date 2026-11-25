@@ -76,7 +76,7 @@ def setup_controller(
             "--",
             "bash",
             "-c",
-            "mkdir -p /home/sprite/blastbox-agent /home/sprite/.local/bin",
+            "rm -rf /home/sprite/blastbox-agent/fixtures && mkdir -p /home/sprite/blastbox-agent /home/sprite/.local/bin",
         ],
         check=True,
     )
@@ -87,6 +87,7 @@ def setup_controller(
         ("blastbox.py", "blastbox.py"),
         ("extract_iocs.py", "extract_iocs.py"),
         ("mcp_probe.py", "mcp_probe.py"),
+        ("slack_bot.py", "slack_bot.py"),
         ("sprite_triage.py", "sprite_triage.py"),
         ("init_dashboard.py", "init_dashboard.py"),
         ("controller_agent.py", "controller_agent.py"),
@@ -104,6 +105,23 @@ def setup_controller(
                 "-p",
                 str(src),
                 f"/home/sprite/blastbox-agent/{dst_name}",
+            ],
+            check=True,
+        )
+
+    fixtures_dir = SCRIPT_DIR / "fixtures"
+    if fixtures_dir.is_dir():
+        _run(
+            [
+                config.SPRITE_BIN,
+                "file",
+                "push",
+                "-s",
+                controller_sprite,
+                "-r",
+                "-p",
+                str(fixtures_dir),
+                "/home/sprite/blastbox-agent/fixtures",
             ],
             check=True,
         )

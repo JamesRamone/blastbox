@@ -112,10 +112,24 @@ def setup_dashboard(
     if not server_local.exists() or not run_local.exists():
         raise FileNotFoundError("Missing web/server.py or web/run.sh")
 
-    _run([config.SPRITE_BIN, "exec", "-s", sprite, "--no-stdin", "--", "bash", "-c", "mkdir -p /home/sprite/blastbox-web"])
+    _run([config.SPRITE_BIN, "exec", "-s", sprite, "--no-stdin", "--", "bash", "-c", "mkdir -p /home/sprite/blastbox-web/assets"])
     _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(server_local), "/home/sprite/blastbox-web/server.py"])
     _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(run_local), "/home/sprite/blastbox-web/run.sh"])
     _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(history_path), "/home/sprite/blastbox-web/history.json"])
+    turkey_asset = SCRIPT_DIR / "docs" / "hacksgiving-turkey.png"
+    if turkey_asset.is_file():
+        _run(
+            [
+                config.SPRITE_BIN,
+                "file",
+                "push",
+                "-s",
+                sprite,
+                "-p",
+                str(turkey_asset),
+                "/home/sprite/blastbox-web/assets/hacksgiving-turkey.png",
+            ]
+        )
 
     service_cmd = (
         'export PATH="/.sprite/bin:$PATH"; '

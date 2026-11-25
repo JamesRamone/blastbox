@@ -16,7 +16,9 @@ Options:
   --clean-pr        Seed & detonate benign GitHub PR -> PASS (0/100)
   --mcp             Detonate poisoned 2-tool stdio MCP server -> BLOCK (100/100)
   --clean-mcp       Detonate clean 2-tool stdio MCP server -> PASS (0/100)
-  --all             Run all 4 demos sequentially (poisoned PR, clean PR, poisoned MCP, clean MCP)
+  --skill           Detonate poisoned SKILL.md (hidden directives + shell block) -> BLOCK (100/100)
+  --clean-skill     Detonate clean SKILL.md -> PASS (0/100)
+  --all             Run all 6 scenarios sequentially
   -h, --help        Show this help message and exit
 
 Environment overrides:
@@ -34,6 +36,8 @@ while [[ $# -gt 0 ]]; do
     --clean-pr) MODE="clean-pr"; shift ;;
     --mcp) MODE="mcp"; shift ;;
     --clean-mcp) MODE="clean-mcp"; shift ;;
+    --skill) MODE="skill"; shift ;;
+    --clean-skill) MODE="clean-skill"; shift ;;
     --all) MODE="all"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "[demo] Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -56,6 +60,7 @@ elapsed = sys.argv[3]
 counts = s["ioc_counts"]
 target = s["target"]
 plan = s.get("agent_plan") or {}
+gh_pub = s.get("github_publish") or {}
 
 print("----------------------------------------------------------------")
 if s.get("mode") == "pr":
@@ -63,7 +68,10 @@ if s.get("mode") == "pr":
 else:
     print(f"Target ({s.get('mode', 'local').upper()}):               {target.get('target_label')}")
 print(f"Sprites (Ctrl -> Det):      {s.get('controller_sprite')} -> {s.get('detonator_sprite')} (unlabeled, * -> deny egress)")
-print(f"GitHub Report URL:          {(s.get('github_publish') or {}).get('html_url')} (HTTP {(s.get('github_publish') or {}).get('http_status')})")
+if gh_pub.get("html_url"):
+    print(f"GitHub Report URL:          {gh_pub.get('html_url')} (HTTP {gh_pub.get('http_status')})")
+else:
+    print(f"GitHub Report URL:          {gh_pub.get('kind', 'skipped')}")
 print(f"Baseline Checkpoint:        {s['checkpoint_restored']} (generic FS diff rollback verified: {s['rollback_verified']})")
 print(f"Deterministic Verdict:      {s['deterministic_verdict']} (risk_score={s['deterministic_risk_score']}/100)")
 print(f"Agent Probe Plan:           {plan.get('targets')} via {plan.get('planner_source')}")
@@ -75,7 +83,7 @@ print(
     f"IOC Counts:                 sensitive_files={counts['sensitive_file_probes']}, "
     f"unexpected_writes={counts['unexpected_writes']}, net_connects={counts['network_connects']}, "
     f"dns_queries={counts['dns_queries']}, subprocesses={counts['notable_subprocesses']}, "
-    f"gateway_blocks={counts['connector_policy_denials']}, readme_pi={counts['prompt_injection_signals']}, "
+    f"gateway_blocks={counts['connector_policy_denials']}, prompt_pi={counts['prompt_injection_signals']}, "
     f"mcp_poison={counts.get('mcp_tool_poisoning', 0)}"
 )
 dash = s.get("dashboard") or {}
@@ -119,11 +127,13 @@ run_pr_demo() {
   print_summary "${elapsed}"
 }
 
-run_mcp_demo() {
+run_dir_demo() {
   local fixture_rel="$1"
-  local label="$2"
+  local mode_arg="$2"
+  local label="$3"
+  local extra_flag="${4:-}"
   local start_t end_t elapsed
-  local mcp_dir="${SCRIPT_DIR}/${fixture_rel}"
+  local target_dir="${SCRIPT_DIR}/${fixture_rel}"
   start_t="$(now_epoch)"
   echo "================================================================"
   echo "  BLASTBOX — ${label}"
@@ -132,10 +142,12 @@ run_mcp_demo() {
   echo "================================================================"
   echo ""
 
-  python3 "${SCRIPT_DIR}/blastbox.py" "${mcp_dir}" --mode mcp \
-    --controller-sprite "${CONTROLLER_SPRITE}" \
-    --detonator-sprite "${DETONATOR_SPRITE}" \
-    --repo "${REPO}"
+  local args=("${target_dir}" "--mode" "${mode_arg}" "--controller-sprite" "${CONTROLLER_SPRITE}" "--detonator-sprite" "${DETONATOR_SPRITE}" "--repo" "${REPO}")
+  if [[ -n "${extra_flag}" ]]; then
+    args+=("${extra_flag}")
+  fi
+
+  python3 "${SCRIPT_DIR}/blastbox.py" "${args[@]}"
   end_t="$(now_epoch)"
   elapsed="$(python3 -c "print(f'{float(${end_t}) - float(${start_t}):.2f}')")"
   print_summary "${elapsed}"
@@ -144,20 +156,26 @@ run_mcp_demo() {
 case "${MODE}" in
   pr) run_pr_demo "0" "Poisoned PR Detonation Demo (BLOCK)" ;;
   clean-pr) run_pr_demo "1" "Clean Benign PR Detonation Demo (PASS)" ;;
-  mcp) run_mcp_demo "fixtures/poisoned-mcp" "Poisoned 2-Tool MCP Server Demo (BLOCK)" ;;
-  clean-mcp) run_mcp_demo "fixtures/clean-mcp" "Clean 2-Tool MCP Server Demo (PASS)" ;;
+  mcp) run_dir_demo "fixtures/poisoned-mcp" "mcp" "Poisoned 2-Tool MCP Server Demo (BLOCK)" ;;
+  clean-mcp) run_dir_demo "fixtures/clean-mcp" "mcp" "Clean 2-Tool MCP Server Demo (PASS)" ;;
+  skill) run_dir_demo "fixtures/poisoned-skill" "skill" "Poisoned SKILL.md Detonation Demo (BLOCK)" "--no-post" ;;
+  clean-skill) run_dir_demo "fixtures/clean-skill" "skill" "Clean SKILL.md Detonation Demo (PASS)" "--no-post" ;;
   all)
     TOTAL_START="$(now_epoch)"
-    run_pr_demo "0" "1/4 Poisoned PR Detonation (BLOCK)"
+    run_pr_demo "0" "1/6 Poisoned PR Detonation (BLOCK)"
     echo ""
-    run_pr_demo "1" "2/4 Clean Benign PR Detonation (PASS)"
+    run_pr_demo "1" "2/6 Clean Benign PR Detonation (PASS)"
     echo ""
-    run_mcp_demo "fixtures/poisoned-mcp" "3/4 Poisoned 2-Tool MCP Detonation (BLOCK)"
+    run_dir_demo "fixtures/poisoned-mcp" "mcp" "3/6 Poisoned 2-Tool MCP Detonation (BLOCK)"
     echo ""
-    run_mcp_demo "fixtures/clean-mcp" "4/4 Clean 2-Tool MCP Detonation (PASS)"
+    run_dir_demo "fixtures/clean-mcp" "mcp" "4/6 Clean 2-Tool MCP Detonation (PASS)"
+    echo ""
+    run_dir_demo "fixtures/poisoned-skill" "skill" "5/6 Poisoned SKILL.md Detonation (BLOCK)" "--no-post"
+    echo ""
+    run_dir_demo "fixtures/clean-skill" "skill" "6/6 Clean SKILL.md Detonation (PASS)" "--no-post"
     TOTAL_END="$(now_epoch)"
     TOTAL_ELAPSED="$(python3 -c "print(f'{float(${TOTAL_END}) - float(${TOTAL_START}):.2f}')")"
     echo ""
-    echo "[demo] Combined (--all, 4 runs) total elapsed wall time: ${TOTAL_ELAPSED}s"
+    echo "[demo] Combined (--all, 6 runs) total elapsed wall time: ${TOTAL_ELAPSED}s"
     ;;
 esac

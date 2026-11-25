@@ -16,14 +16,18 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,12 +35,16 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
+import agent_planner  # noqa: E402
 import config  # noqa: E402
 import extract_iocs  # noqa: E402
 import init_dashboard  # noqa: E402
 
 PR_URL_RE = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)(?:/.*)?$")
+GH_BLOB_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*)$")
+URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 CHECKPOINT_ID_RE = re.compile(r"\b(v\d+)\b")
+MAX_REMOTE_SKILL_BYTES = 256 * 1024
 
 # Generic filesystem snapshot helper executed inside the Detonator Sprite.
 # Captures /home/sprite (excluding /home/sprite/detonation) and /tmp (excluding /tmp/.blastbox_run).
@@ -451,6 +459,163 @@ def _run_agent_planner(
     return json.loads((run_dir / "agent_plan.json").read_text(encoding="utf-8"))
 
 
+def _normalize_skill_url(raw_url: str) -> str:
+    url = raw_url.strip()
+    m = GH_BLOB_RE.match(url)
+    if m:
+        return f"https://raw.githubusercontent.com/{m.group(1)}/{m.group(2)}/{m.group(3)}/{m.group(4)}"
+    return url
+
+
+def validate_untrusted_https_url(raw_url: str) -> str:
+    """Validate an untrusted HTTPS URL against strict SSRF rules."""
+    url = _normalize_skill_url(raw_url)
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() != "https":
+        raise ValueError(f"Only HTTPS URLs are permitted for untrusted fetch (got scheme={parsed.scheme!r})")
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not host:
+        raise ValueError("URL is missing a hostname")
+    if (
+        host == "localhost"
+        or host == "api.sprites.dev"
+        or host.endswith(".sprites.dev")
+        or host.endswith(".local")
+        or host.endswith(".internal")
+        or host.endswith(".localhost")
+    ):
+        raise ValueError(f"Blocked internal/gateway hostname: {host}")
+
+    # Direct IP literal check
+    try:
+        ip_lit = ipaddress.ip_address(host)
+        if not ip_lit.is_global:
+            raise ValueError(f"Blocked non-global IP literal: {host}")
+    except ValueError as exc:
+        if "Blocked non-global IP" in str(exc):
+            raise
+
+    port = parsed.port or 443
+    try:
+        addr_infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Failed to resolve host {host}: {exc}") from exc
+    if not addr_infos:
+        raise ValueError(f"No DNS addresses resolved for {host}")
+
+    for info in addr_infos:
+        sockaddr = info[4]
+        ip_str = sockaddr[0].split("%", 1)[0]
+        ip_obj = ipaddress.ip_address(ip_str)
+        if not ip_obj.is_global:
+            raise ValueError(f"Blocked non-global resolved IP {ip_str} for host {host}")
+    return url
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    max_redirections = 3
+
+    def redirect_request(self, req: urllib.request.Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> urllib.request.Request | None:
+        resolved = urllib.parse.urljoin(req.full_url, newurl)
+        validated = validate_untrusted_https_url(resolved)
+        return super().redirect_request(req, fp, code, msg, headers, validated)
+
+
+def fetch_untrusted_url_safely(raw_url: str, *, max_bytes: int = MAX_REMOTE_SKILL_BYTES) -> tuple[str, str]:
+    """Fetch untrusted Markdown/skill content over HTTPS with SSRF & size guards."""
+    safe_url = validate_untrusted_https_url(raw_url)
+    opener = urllib.request.build_opener(_SafeRedirectHandler())
+    req = urllib.request.Request(
+        safe_url,
+        headers={
+            "Accept": "text/markdown, text/plain;q=0.9, */*;q=0.5",
+            "User-Agent": "blastbox-skill-fetch/1.0",
+        },
+    )
+    with opener.open(req, timeout=15) as resp:
+        final_url = validate_untrusted_https_url(resp.geturl())
+        raw = resp.read(max_bytes + 1)
+    if len(raw) > max_bytes:
+        raise ValueError(f"Remote target exceeds {max_bytes} byte limit")
+    return final_url, raw.decode("utf-8", errors="replace")
+
+
+def _run_skill_url_fetch_on_controller(
+    controller_sprite: str,
+    raw_url: str,
+    run_dir: Path,
+    *,
+    local_controller: bool,
+) -> tuple[str, str]:
+    if local_controller:
+        final_url, text = fetch_untrusted_url_safely(raw_url)
+        return final_url, text
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp = Path(tmpdir)
+        runner = tmp / "fetch_skill.py"
+        runner.write_text(
+            f"""
+import ipaddress, json, re, socket, sys, urllib.parse, urllib.request
+from pathlib import Path
+
+GH_BLOB_RE = re.compile(r"^https://github\\.com/([^/]+)/([^/]+)/blob/([^/]+)/(.*)$")
+MAX_BYTES = {MAX_REMOTE_SKILL_BYTES}
+
+def validate_url(raw):
+    url = raw.strip()
+    m = GH_BLOB_RE.match(url)
+    if m:
+        url = f"https://raw.githubusercontent.com/{{m.group(1)}}/{{m.group(2)}}/{{m.group(3)}}/{{m.group(4)}}"
+    p = urllib.parse.urlsplit(url)
+    if p.scheme.lower() != "https":
+        raise ValueError(f"Only HTTPS URLs permitted (got {{p.scheme!r}})")
+    host = (p.hostname or "").strip().lower().rstrip(".")
+    if not host or host == "localhost" or host == "api.sprites.dev" or host.endswith((".sprites.dev", ".local", ".internal", ".localhost")):
+        raise ValueError(f"Blocked internal/gateway hostname: {{host}}")
+    try:
+        ip_lit = ipaddress.ip_address(host)
+        if not ip_lit.is_global:
+            raise ValueError(f"Blocked non-global IP literal: {{host}}")
+    except ValueError as exc:
+        if "Blocked non-global IP" in str(exc):
+            raise
+    for info in socket.getaddrinfo(host, p.port or 443, type=socket.SOCK_STREAM):
+        ip_obj = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        if not ip_obj.is_global:
+            raise ValueError(f"Blocked non-global IP {{ip_obj}} for {{host}}")
+    return url
+
+class SafeRedir(urllib.request.HTTPRedirectHandler):
+    max_redirections = 3
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        v = validate_url(urllib.parse.urljoin(req.full_url, newurl))
+        return super().redirect_request(req, fp, code, msg, headers, v)
+
+safe_u = validate_url({raw_url!r})
+req = urllib.request.Request(safe_u, headers={{"Accept": "text/markdown, text/plain;q=0.9", "User-Agent": "blastbox-skill-fetch/1.0"}})
+with urllib.request.build_opener(SafeRedir()).open(req, timeout=15) as r:
+    final_u = validate_url(r.geturl())
+    raw = r.read(MAX_BYTES + 1)
+if len(raw) > MAX_BYTES:
+    raise ValueError("Remote skill file exceeds 256 KB")
+Path(sys.argv[1]).write_text(json.dumps({{"url": final_u, "text": raw.decode("utf-8", errors="replace")}}), encoding="utf-8")
+""",
+            encoding="utf-8",
+        )
+        remote_out = "/tmp/.ctrl_skill_bundle.json"
+        local_out = tmp / "skill_bundle.json"
+        _run_controller_python(
+            controller_sprite,
+            runner,
+            [remote_out],
+            local_controller=False,
+            download_files=[(remote_out, local_out)],
+        )
+        data = json.loads(local_out.read_text(encoding="utf-8"))
+        return str(data["url"]), str(data["text"])
+
+
 def stage_and_plan_target(
     *,
     controller_sprite: str,
@@ -503,6 +668,103 @@ def stage_and_plan_target(
         meta["detonator_sprite"] = detonator_sprite
         log("3/9", f"Staged {len(meta['files_fetched'])} PR files to '{detonator_sprite}' (agent stages={agent_plan.get('stages')}).")
         return meta, agent_plan
+
+    if resolved_mode == "skill":
+        skill_url: str | None = None
+        if URL_RE.match(raw_target.strip()):
+            log("3/9", f"Fetching untrusted SKILL.md via SSRF-guarded Controller '{controller_sprite}'...")
+            skill_url, skill_text = _run_skill_url_fetch_on_controller(
+                controller_sprite,
+                raw_target.strip(),
+                run_dir,
+                local_controller=local_controller,
+            )
+            parsed_u = urllib.parse.urlsplit(skill_url)
+            skill_label = f"{parsed_u.hostname}{parsed_u.path}"
+        else:
+            assert local_dir is not None
+            if local_dir.is_file():
+                skill_file = local_dir
+                skill_label = _safe_target_label(local_dir)
+            else:
+                if not local_dir.is_dir():
+                    raise FileNotFoundError(f"Local skill path does not exist: {local_dir}")
+                cand_upper = local_dir / "SKILL.md"
+                cand_lower = local_dir / "skill.md"
+                skill_file = cand_upper if cand_upper.exists() else cand_lower
+                if not skill_file.exists():
+                    raise FileNotFoundError(f"No SKILL.md found in {local_dir}")
+                skill_label = _safe_target_label(local_dir)
+            skill_text = skill_file.read_text(encoding="utf-8", errors="replace")
+
+        blocks = agent_planner.extract_fenced_code_blocks(skill_text)
+        agent_plan = _run_agent_planner(
+            controller_sprite,
+            mode="skill",
+            input_payload={
+                "skill_label": skill_label,
+                "skill_text": skill_text,
+                "blocks": blocks,
+            },
+            run_dir=run_dir,
+            model=model,
+            local_controller=local_controller,
+        )
+
+        # Stage SKILL.md and planned executable blocks onto blastbox-detonator
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            local_skill = tmp / "SKILL.md"
+            local_skill.write_text(skill_text, encoding="utf-8")
+            sprite_push(detonator_sprite, local_skill, "/home/sprite/detonation/SKILL.md")
+
+            blocks_dir = tmp / ".blastbox_skill_blocks"
+            blocks_dir.mkdir()
+            selected_indices = agent_plan.get("block_indices") or [b["index"] for b in blocks]
+            blocks_by_idx = {b["index"]: b for b in blocks}
+            manifest_blocks: list[dict[str, str]] = []
+            for idx in selected_indices:
+                blk = blocks_by_idx.get(idx)
+                if not blk:
+                    continue
+                ext = "py" if blk["lang"] == "python" else "sh"
+                fname = f"block_{idx}.{ext}"
+                (blocks_dir / fname).write_text(blk["code"], encoding="utf-8")
+                manifest_blocks.append({"file": fname, "lang": blk["lang"]})
+            (blocks_dir / "manifest.json").write_text(json.dumps(manifest_blocks, indent=2), encoding="utf-8")
+            (blocks_dir / "run.py").write_text(
+                (
+                    "import json, subprocess, sys\n"
+                    "from pathlib import Path\n"
+                    "bdir = Path('/home/sprite/detonation/.blastbox_skill_blocks')\n"
+                    "manifest = json.loads((bdir / 'manifest.json').read_text(encoding='utf-8'))\n"
+                    "if not manifest:\n"
+                    "    print('[blastbox-skill] No executable code blocks found; static scan only.', flush=True)\n"
+                    "for item in manifest:\n"
+                    "    fpath = bdir / item['file']\n"
+                    "    cmd = [sys.executable, str(fpath)] if item['lang'] == 'python' else ['bash', str(fpath)]\n"
+                    "    print(f\"[blastbox-skill] Running {item['file']} ({item['lang']})\", flush=True)\n"
+                    "    proc = subprocess.run(cmd, cwd='/home/sprite/detonation', check=False)\n"
+                    "    print(f\"[blastbox-skill] {item['file']} exit={proc.returncode}\", flush=True)\n"
+                ),
+                encoding="utf-8",
+            )
+            sprite_push(detonator_sprite, blocks_dir, "/home/sprite/detonation/.blastbox_skill_blocks", recursive=True)
+
+        owner, repo = default_repo.split("/", 1)
+        log("3/9", f"Staged SKILL.md ({len(manifest_blocks)} planned code blocks) to '{detonator_sprite}'.")
+        return (
+            {
+                "mode": "skill",
+                "target_label": skill_label,
+                "skill_url": skill_url,
+                "owner": owner,
+                "repo": repo,
+                "controller_sprite": controller_sprite,
+                "detonator_sprite": detonator_sprite,
+            },
+            agent_plan,
+        )
 
     assert local_dir is not None
     if not local_dir.is_dir():
@@ -600,6 +862,14 @@ def run_strace_detonation(
             '--work-dir /home/sprite/detonation '
             '--plan /tmp/.blastbox_run/agent_plan.json '
             '--transcript /home/sprite/detonation/.blastbox_mcp_transcript.json'
+        )
+    elif mode == "skill":
+        targets = agent_plan.get("targets") or []
+        log("4/9", f"Detonating SKILL.md blocks {targets} inside air-gapped '{detonator_sprite}' under strace ({timeout_s}s timeout)...")
+        inner_cmd = (
+            '    cd /home/sprite/detonation\n'
+            '    echo "=== [blastbox] SKILL.md fenced code detonation ==="\n'
+            '    "\'"$REAL_PYTHON"\'" /home/sprite/detonation/.blastbox_skill_blocks/run.py'
         )
     else:
         stages = [s for s in (agent_plan.get("stages") or []) if s in ("pip_install", "unittest", "pytest", "import_check")]
@@ -704,6 +974,9 @@ def pull_forensic_artifacts(detonator_sprite: str, run_dir: Path, *, mode: str) 
     readme_ok = sprite_pull(detonator_sprite, "/home/sprite/detonation/README.md", run_dir / "README.md", check=False)
     if not readme_ok:
         (run_dir / "README.md").write_text("", encoding="utf-8")
+    skill_ok = False
+    if mode == "skill":
+        skill_ok = sprite_pull(detonator_sprite, "/home/sprite/detonation/SKILL.md", run_dir / "SKILL.md", check=False)
     mcp_ok = False
     if mode == "mcp":
         mcp_ok = sprite_pull(
@@ -712,7 +985,7 @@ def pull_forensic_artifacts(detonator_sprite: str, run_dir: Path, *, mode: str) 
             run_dir / "mcp_transcript.json",
             check=True,
         )
-    log("5/9", f"Pulled strace, stdout/stderr, README.md (present={readme_ok}, mcp_transcript={mcp_ok}).")
+    log("5/9", f"Pulled strace, stdout/stderr, README.md (present={readme_ok}, skill={skill_ok}, mcp_transcript={mcp_ok}).")
 
 
 def _prune_detonator_checkpoints(detonator_sprite: str, keep: int) -> list[str]:
@@ -838,6 +1111,10 @@ def run_clean_sprite_triage(
 ) -> dict[str, Any]:
     log("8/9", f"Running zero-secret Connector triage & GitHub publish inside Controller '{controller_sprite}'...")
     readme_text = (run_dir / "README.md").read_text(encoding="utf-8", errors="replace") if (run_dir / "README.md").exists() else ""
+    skill_text = (run_dir / "SKILL.md").read_text(encoding="utf-8", errors="replace") if (run_dir / "SKILL.md").exists() else ""
+    combined_doc = skill_text or readme_text
+    if skill_text and readme_text:
+        combined_doc = f"{skill_text}\n\n{readme_text}"
     mcp_tools_list = None
     mcp_transcript_path = run_dir / "mcp_transcript.json"
     if mcp_transcript_path.exists():
@@ -846,7 +1123,7 @@ def run_clean_sprite_triage(
 
     triage_input: dict[str, Any] = {
         "iocs": iocs,
-        "readme_excerpt": readme_text[:3000],
+        "readme_excerpt": combined_doc[:3000],
         "target_info": config.sanitize_value(target_info),
         "agent_plan": config.sanitize_value(agent_plan),
     }
@@ -910,6 +1187,12 @@ def _build_sanitized_run_record(
         suffix = f"pr-{pr_num}"
         target_label = f"{target_info.get('owner')}/{target_info.get('repo')}#{pr_num} ({target_info.get('head_ref')})"
         target_url = target_info.get("pr_url")
+    elif resolved_mode == "skill":
+        raw_label = str(target_info.get("target_label") or "SKILL.md")
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", raw_label).strip("-").lower()[:32] or "skill"
+        suffix = f"skill-{slug}"
+        target_label = raw_label
+        target_url = target_info.get("skill_url")
     else:
         raw_label = str(target_info.get("target_label") or resolved_mode)
         slug = re.sub(r"[^a-zA-Z0-9]+", "-", raw_label).strip("-").lower()[:32] or "target"
@@ -1062,9 +1345,21 @@ def run_audit(
     if pr_match:
         resolved_mode = "pr"
         local_dir = None
+    elif URL_RE.match(target.strip()):
+        resolved_mode = mode if mode in ("skill",) else "skill"
+        local_dir = None
     else:
         local_dir = Path(target)
-        if mode == "mcp" or (
+        if mode == "skill" or (
+            mode == "auto"
+            and (
+                (local_dir.is_file() and local_dir.suffix.lower() == ".md")
+                or (local_dir / "SKILL.md").exists()
+                or (local_dir / "skill.md").exists()
+            )
+        ):
+            resolved_mode = "skill"
+        elif mode == "mcp" or (
             mode == "auto"
             and ((local_dir / "mcp_manifest.json").exists() or (local_dir / "server.py").exists())
         ):
@@ -1182,11 +1477,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Blastbox — Two-Sprite Air-Gapped PR/Package/MCP Auditor")
     parser.add_argument(
         "target",
-        help="Local repository/MCP directory OR GitHub PR URL",
+        help="Local repository/MCP/SKILL.md path OR GitHub PR / HTTPS SKILL.md URL",
     )
     parser.add_argument("--sprite", "--controller-sprite", dest="controller_sprite", default=config.CONTROLLER_SPRITE)
     parser.add_argument("--detonator-sprite", default=config.DETONATOR_SPRITE)
-    parser.add_argument("--mode", choices=("auto", "pr", "mcp"), default="auto")
+    parser.add_argument("--mode", choices=("auto", "pr", "mcp", "skill"), default="auto")
     parser.add_argument("--output-dir", type=Path, default=SCRIPT_DIR / "last_run")
     parser.add_argument("--repo", default=config.DEFAULT_REPO)
     parser.add_argument("--history-file", type=Path, default=SCRIPT_DIR / "history.json")

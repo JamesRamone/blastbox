@@ -58,9 +58,19 @@ DETONATOR_SPRITE = os.environ.get("BLASTBOX_DETONATOR_SPRITE") or "blastbox-deto
 
 GITHUB_CONNECTOR_ID = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID") or "<github-connector-id>"
 OPENROUTER_CONNECTOR_ID = os.environ.get("BLASTBOX_OPENROUTER_CONNECTOR_ID") or "<openrouter-connector-id>"
+SLACK_CONNECTOR_ID = os.environ.get("BLASTBOX_SLACK_CONNECTOR_ID") or "<slack-connector-id>"
+SLACK_PROVIDER = os.environ.get("BLASTBOX_SLACK_PROVIDER") or "slack_bot"
 
 GITHUB_GATEWAY = f"https://api.sprites.dev/v1/gateway/github/{GITHUB_CONNECTOR_ID}"
 OPENROUTER_GATEWAY = f"https://api.sprites.dev/v1/gateway/openrouter/{OPENROUTER_CONNECTOR_ID}"
+SLACK_GATEWAY = f"https://api.sprites.dev/v1/gateway/{SLACK_PROVIDER}/{SLACK_CONNECTOR_ID}"
+
+SLACK_CHANNELS = [
+    c.strip()
+    for c in (os.environ.get("BLASTBOX_SLACK_CHANNELS") or "<slack-channel-id>").split(",")
+    if c.strip()
+]
+SLACK_POLL_INTERVAL_SECONDS = max(3, int(os.environ.get("BLASTBOX_SLACK_POLL_INTERVAL", "5")))
 
 DEFAULT_REPO = os.environ.get("BLASTBOX_REPO") or "JamesRamone/hacksgiving-blastbox-demo"
 PUBLIC_URL = os.environ.get("BLASTBOX_PUBLIC_URL") or "https://blastbox-3xb.sprites.app"

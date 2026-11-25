@@ -537,18 +537,24 @@ def parse_connector_denials(stdout_text: str, stderr_text: str, probe_urls: list
     return denials
 
 
-def scan_readme_prompt_injection(readme_text: str) -> list[dict[str, Any]]:
+def scan_readme_prompt_injection(readme_text: str, *, source: str = "README.md") -> list[dict[str, Any]]:
     """Deterministic static scan for reviewer-override / prompt-injection patterns."""
     findings: list[dict[str, Any]] = []
     if not readme_text:
         return findings
 
+    rules = (
+        list(PROMPT_INJECTION_RULES) + list(MCP_POISONING_RULES)
+        if source == "SKILL.md"
+        else list(PROMPT_INJECTION_RULES)
+    )
     lines = readme_text.splitlines()
-    for rule_id, pattern, desc in PROMPT_INJECTION_RULES:
+    for rule_id, pattern, desc in rules:
         for idx, line in enumerate(lines, start=1):
             if pattern.search(line):
                 findings.append(
                     {
+                        "source": source,
                         "rule": rule_id,
                         "description": desc,
                         "line": idx,
@@ -561,6 +567,7 @@ def scan_readme_prompt_injection(readme_text: str) -> list[dict[str, Any]]:
             if m:
                 findings.append(
                     {
+                        "source": source,
                         "rule": rule_id,
                         "description": desc,
                         "line": readme_text[: m.start()].count("\n") + 1,
@@ -699,9 +706,30 @@ def compute_risk_and_verdict(
         reasons.append(f"Blocked / air-gapped Connector route attempted ({len(connector_denials)}) [+{pts}]")
 
     if prompt_injections:
-        pts = min(25, 15 + 5 * len(prompt_injections))
-        score += pts
-        reasons.append(f"Untrusted README prompt-injection patterns ({len(prompt_injections)} rules matched) [+{pts}]")
+        skill_hits = [p for p in prompt_injections if p.get("source") == "SKILL.md"]
+        if skill_hits:
+            pts = min(50, 25 + 10 * len(skill_hits))
+            if any(
+                p.get("rule")
+                in (
+                    "mcp_hidden_directive_tag",
+                    "mcp_conceal_from_user",
+                    "mcp_ssh_or_secret_read",
+                    "mcp_exfil_command",
+                    "mcp_base64_directive",
+                    "secret_exfil_prompt",
+                    "ignore_instructions",
+                    "forced_approval",
+                )
+                for p in skill_hits
+            ):
+                high_severity = True
+            score += pts
+            reasons.append(f"Untrusted SKILL.md / README prompt-injection patterns ({len(prompt_injections)} rules matched) [+{pts}]")
+        else:
+            pts = min(25, 15 + 5 * len(prompt_injections))
+            score += pts
+            reasons.append(f"Untrusted README prompt-injection patterns ({len(prompt_injections)} rules matched) [+{pts}]")
 
     if mcp_tool_poisoning:
         pts = min(35, 20 + 5 * len(mcp_tool_poisoning))
@@ -736,6 +764,7 @@ def extract_all_iocs(run_dir: Path) -> dict[str, Any]:
     stdout_path = run_dir / "command.stdout"
     stderr_path = run_dir / "command.stderr"
     readme_path = run_dir / "README.md"
+    skill_path = run_dir / "SKILL.md"
 
     def _load_json(name: str) -> Any:
         p = run_dir / name
@@ -747,6 +776,7 @@ def extract_all_iocs(run_dir: Path) -> dict[str, Any]:
     stdout_text = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
     stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
     readme_text = readme_path.read_text(encoding="utf-8", errors="replace") if readme_path.exists() else ""
+    skill_text = skill_path.read_text(encoding="utf-8", errors="replace") if skill_path.exists() else ""
     mcp_transcript = _load_json("mcp_transcript.json")
     fs_diff = _load_json("fs_diff.json")
     detonation_meta = _load_json("detonation_meta.json")
@@ -755,7 +785,9 @@ def extract_all_iocs(run_dir: Path) -> dict[str, Any]:
     strace_data["unexpected_writes"] = merge_fs_diff_into_writes(strace_data["unexpected_writes"], fs_diff)
 
     connector_denials = parse_connector_denials(stdout_text, stderr_text, strace_data["probe_urls"])
-    prompt_injections = scan_readme_prompt_injection(readme_text)
+    prompt_injections = scan_readme_prompt_injection(readme_text, source="README.md")
+    if skill_text:
+        prompt_injections.extend(scan_readme_prompt_injection(skill_text, source="SKILL.md"))
     mcp_tool_poisoning = scan_mcp_tool_poisoning(mcp_transcript)
 
     detonation_timeouts: list[dict[str, Any]] = []

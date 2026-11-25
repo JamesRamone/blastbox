@@ -328,6 +328,18 @@ def render_markdown_report(
             if verdict != "PASS"
             else "all MCP tools executed cleanly with zero out-of-policy syscalls"
         )
+    elif target_info.get("mode") == "skill":
+        label = target_info.get("target_label") or "SKILL.md"
+        skill_url = target_info.get("skill_url")
+        if skill_url:
+            lines.append(f"**Target Agent Skill:** `{label}` ({skill_url})  ")
+        else:
+            lines.append(f"**Target Agent Skill:** `{label}`  ")
+        behavior_note = (
+            "embedded SKILL.md commands exited 0 while out-of-policy syscalls or hidden directives fired"
+            if verdict != "PASS"
+            else "SKILL.md inspection and embedded blocks completed cleanly with zero out-of-policy syscalls"
+        )
     else:
         label = target_info.get("target_label") or "local-target"
         lines.append(f"**Target Directory:** `{label}`  ")

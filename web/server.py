@@ -27,8 +27,16 @@ PORT = int(os.environ.get("PORT", "8080"))
 
 GITHUB_CONNECTOR_ID = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID") or "<github-connector-id>"
 OPENROUTER_CONNECTOR_ID = os.environ.get("BLASTBOX_OPENROUTER_CONNECTOR_ID") or "<openrouter-connector-id>"
+SLACK_CONNECTOR_ID = os.environ.get("BLASTBOX_SLACK_CONNECTOR_ID") or "<slack-connector-id>"
 DEFAULT_DETONATOR = os.environ.get("BLASTBOX_DETONATOR_SPRITE") or "blastbox-detonator"
 DEFAULT_PUBLIC_URL = os.environ.get("BLASTBOX_PUBLIC_URL") or "https://blastbox-3xb.sprites.app"
+ASSETS_DIR = Path(os.environ.get("BLASTBOX_ASSETS_DIR", str(APP_DIR / "assets")))
+ALLOWED_ASSETS: dict[str, tuple[Path, str]] = {
+    "/assets/hacksgiving-turkey.png": (ASSETS_DIR / "hacksgiving-turkey.png", "image/png"),
+}
+REPO_FALLBACK_ASSETS: dict[str, Path] = {
+    "/assets/hacksgiving-turkey.png": APP_DIR.parent / "docs" / "hacksgiving-turkey.png",
+}
 
 FORBIDDEN_ENV_VARS = (
     "GITHUB_TOKEN",
@@ -86,8 +94,8 @@ SIGNAL_SPECS: tuple[tuple[str, str], ...] = (
     ("dns_queries", "DNS queries"),
     ("notable_subprocesses", "Notable subprocesses"),
     ("connector_policy_denials", "Connector / gateway blocks"),
-    ("prompt_injection_signals", "README prompt injection"),
-    ("mcp_tool_poisoning", "MCP metadata poisoning"),
+    ("prompt_injection_signals", "Doc / prompt injection"),
+    ("mcp_tool_poisoning", "MCP / SKILL poisoning"),
 )
 
 FINDING_PTS_RE = re.compile(r"\s*\[\+(\d+)\]\s*$")
@@ -204,6 +212,8 @@ def _kind_display(kind: Any) -> str:
         return "GitHub PR"
     if k == "mcp":
         return "MCP server"
+    if k == "skill":
+        return "Agent SKILL.md"
     if k == "local":
         return "Local package"
     return k or "Unknown"
@@ -536,6 +546,7 @@ def render_dashboard_html(
     passed_count = sum(1 for r in runs if r["verdict"] == "PASS")
     pr_count = sum(1 for r in runs if r["target_kind"] == "pr")
     mcp_count = sum(1 for r in runs if r["target_kind"] == "mcp")
+    skill_count = sum(1 for r in runs if r["target_kind"] == "skill")
     verified_rollbacks = sum(1 for r in runs if r["rollback_verified"])
     latest_cp = html.escape(runs[0]["checkpoint_restored"]) if runs else "none"
 
@@ -549,9 +560,12 @@ def render_dashboard_html(
     if isinstance(agent_status, dict):
         watched_repo = html.escape(str(agent_status.get("watched_repo") or ""))
         cli_auth = bool(agent_status.get("sprite_cli_authenticated"))
+        slack_ok = bool(agent_status.get("slack_connected"))
         active_job = str(agent_status.get("active_job") or "").strip()
         if active_job:
             agent_note = html.escape(active_job)
+        elif cli_auth and slack_ok:
+            agent_note = f"Watching {watched_repo} and Slack #blastbox"
         elif cli_auth:
             agent_note = f"Watching {watched_repo} (autonomous control active)"
         else:
@@ -618,6 +632,16 @@ def render_dashboard_html(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Blastbox: Isolated Detonation Audit Console</title>
+  <script>
+    (function () {{
+      try {{
+        var saved = localStorage.getItem("blastbox-theme");
+        if (saved === "hacksgiving" || saved === "lab") {{
+          document.documentElement.setAttribute("data-theme", saved);
+        }}
+      }} catch (e) {{}}
+    }})();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -627,6 +651,7 @@ def render_dashboard_html(
       --surface: #FFFFFF;
       --surface-subtle: #F7F8FA;
       --surface-hover: #EDF0F4;
+      --topbar-bg: rgba(255, 255, 255, 0.94);
       --ink: #10151C;
       --ink-secondary: #374151;
       --muted: #526071;
@@ -649,6 +674,20 @@ def render_dashboard_html(
       --text-body: 0.9375rem;
       --text-sm: 0.8125rem;
       --ease: cubic-bezier(0.22, 1, 0.36, 1);
+    }}
+    html[data-theme="hacksgiving"] {{
+      --bg: #FAF8F5;
+      --surface: #FFFFFF;
+      --surface-subtle: #F4F0FA;
+      --surface-hover: #ECE5F6;
+      --topbar-bg: rgba(250, 248, 245, 0.94);
+      --ink: #1E1633;
+      --ink-secondary: #3C3156;
+      --muted: #5A4E75;
+      --border: #DDD4EC;
+      --border-subtle: #EAE3F4;
+      --accent: #6D28D9;
+      --accent-hover: #5B21B6;
     }}
     *, *::before, *::after {{
       box-sizing: border-box;
@@ -699,7 +738,7 @@ def render_dashboard_html(
       position: sticky;
       top: 0;
       z-index: 40;
-      background: rgba(255, 255, 255, 0.94);
+      background: var(--topbar-bg);
       backdrop-filter: blur(8px);
       border-bottom: 1px solid var(--border);
     }}
@@ -772,6 +811,38 @@ def render_dashboard_html(
     }}
     .nav-status-alert {{
       color: var(--block-ink);
+    }}
+    .theme-switch {{
+      display: inline-flex;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      flex-shrink: 0;
+    }}
+    .theme-btn {{
+      appearance: none;
+      border: none;
+      border-right: 1px solid var(--border);
+      background: transparent;
+      color: var(--ink-secondary);
+      font-family: var(--font-sans);
+      font-size: var(--text-sm);
+      font-weight: 500;
+      padding: 0.32rem 0.65rem;
+      min-height: 30px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background-color 150ms var(--ease), color 150ms var(--ease);
+    }}
+    .theme-btn:last-child {{
+      border-right: none;
+    }}
+    .theme-btn:hover {{
+      background: var(--surface-hover);
+      color: var(--ink);
+    }}
+    .theme-btn[aria-pressed="true"] {{
+      background: var(--ink);
+      color: var(--surface);
     }}
 
     /* Main container */
@@ -1372,6 +1443,54 @@ def render_dashboard_html(
       line-height: 1.5;
     }}
 
+    .arch-figure {{
+      margin: 0 0 1.25rem;
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(260px, 1fr);
+      background: var(--surface);
+      border: 1px solid var(--border);
+    }}
+    .arch-figure-media {{
+      background: #FAF8F5;
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }}
+    .arch-figure-media img {{
+      display: block;
+      width: 100%;
+      height: auto;
+    }}
+    .arch-figure-caption {{
+      padding: 1.25rem 1.4rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: 0.65rem;
+    }}
+    .arch-figure-caption h3 {{
+      margin: 0;
+      font-size: var(--text-heading);
+      font-weight: 600;
+      color: var(--ink);
+    }}
+    .arch-figure-caption p {{
+      margin: 0;
+      font-size: var(--text-body);
+      color: var(--ink-secondary);
+      line-height: 1.55;
+    }}
+    .arch-slack-list {{
+      margin: 0.25rem 0 0;
+      padding-left: 1.15rem;
+      font-size: var(--text-sm);
+      color: var(--muted);
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }}
+
     .arch-details {{
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1480,8 +1599,12 @@ def render_dashboard_html(
         border-bottom: 1px solid var(--border);
         max-height: 380px;
       }}
-      .arch-details {{
+      .arch-details, .arch-figure {{
         grid-template-columns: minmax(0, 1fr);
+      }}
+      .arch-figure-media {{
+        border-right: none;
+        border-bottom: 1px solid var(--border-subtle);
       }}
       .arch-col {{
         border-right: none;
@@ -1505,8 +1628,9 @@ def render_dashboard_html(
       }}
       .topnav {{
         width: 100%;
+        flex-wrap: wrap;
         justify-content: space-between;
-        gap: 0.65rem;
+        gap: 0.45rem 0.65rem;
         border-top: 1px solid var(--border-subtle);
         padding-top: 0.45rem;
       }}
@@ -1578,9 +1702,9 @@ def render_dashboard_html(
       <div class="brand-group">
         <a class="brand" href="#top">
           <svg class="brand-mark" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <rect x="1.5" y="1.5" width="17" height="17" stroke="#10151C" stroke-width="1.6"/>
-            <path d="M10 4.5V15.5M4.5 10H15.5" stroke="#D5DCE4" stroke-width="1.2"/>
-            <rect x="7" y="7" width="6" height="6" fill="#C8281E"/>
+            <rect x="1.5" y="1.5" width="17" height="17" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M10 4.5V15.5M4.5 10H15.5" stroke="var(--border)" stroke-width="1.2"/>
+            <rect x="7" y="7" width="6" height="6" fill="var(--accent)"/>
           </svg>
           <span>BLASTBOX</span>
         </a>
@@ -1591,6 +1715,10 @@ def render_dashboard_html(
         <a class="nav-jump" href="#architecture">Architecture</a>
         <a href="/api/runs">JSON API</a>
         <a href="/health">Health</a>
+        <div class="theme-switch" role="group" aria-label="Theme mode">
+          <button type="button" class="theme-btn" data-theme-set="lab" aria-pressed="true">Lab</button>
+          <button type="button" class="theme-btn" data-theme-set="hacksgiving" aria-pressed="false">Hacksgiving</button>
+        </div>
         <span class="nav-status {secret_status_cls}">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5"/>
@@ -1605,16 +1733,16 @@ def render_dashboard_html(
   <main class="shell">
     <section class="console-head">
       <div class="console-title-row">
-        <h1>Isolated PR and MCP detonation audit</h1>
+        <h1>Isolated PR, MCP, and SKILL.md detonation</h1>
         <p class="console-desc">
-          Untrusted pull requests and stdio MCP servers detonate inside an unlabeled, deny-all egress Fly.io Sprite under kernel strace, rewind to a clean overlay checkpoint, and receive zero-secret triage from the controller Sprite.
+          Untrusted pull requests, stdio MCP servers, and agent <code>SKILL.md</code> packages triggered directly or via Slack <code>@blastbox boom</code> detonate inside an unlabeled, deny-all egress Fly.io Sprite under kernel strace, rewind to a clean overlay checkpoint, and receive zero-secret triage from the controller Sprite.
         </p>
       </div>
       <div class="kpi-strip" role="region" aria-label="Isolation and detonation summary">
         <div class="kpi-cell">
           <div class="kpi-label">Recorded detonations</div>
           <div class="kpi-value">{total_runs}</div>
-          <div class="kpi-note">{pr_count} PR, {mcp_count} MCP, {blocked_count} blocked, {passed_count} passed</div>
+          <div class="kpi-note">{pr_count} PR, {mcp_count} MCP, {skill_count} SKILL.md, {blocked_count} blocked, {passed_count} passed</div>
         </div>
         <div class="kpi-cell">
           <div class="kpi-label">Detonator isolation</div>
@@ -1624,7 +1752,7 @@ def render_dashboard_html(
         <div class="kpi-cell">
           <div class="kpi-label">Controller policy</div>
           <div class="kpi-value">403 / 201</div>
-          <div class="kpi-note">Zero-secret Connectors, /user/repos denied</div>
+          <div class="kpi-note">3 zero-secret Connectors, /user/repos denied</div>
         </div>
         <div class="kpi-cell">
           <div class="kpi-label">Overlay rollback</div>
@@ -1645,6 +1773,7 @@ def render_dashboard_html(
             <button type="button" class="seg-tab" role="tab" aria-selected="true" data-kind-filter="all">All ({total_runs})</button>
             <button type="button" class="seg-tab" role="tab" aria-selected="false" data-kind-filter="pr">GitHub PR ({pr_count})</button>
             <button type="button" class="seg-tab" role="tab" aria-selected="false" data-kind-filter="mcp">MCP server ({mcp_count})</button>
+            <button type="button" class="seg-tab" role="tab" aria-selected="false" data-kind-filter="skill">SKILL.md ({skill_count})</button>
           </div>
           <select id="verdict-filter" class="control-select" aria-label="Filter by verdict">
             <option value="all">All verdicts</option>
@@ -1711,9 +1840,26 @@ def render_dashboard_html(
         <li class="pipeline-step">
           <div class="step-index">Step 5</div>
           <h3 class="step-title">Deterministic triage</h3>
-          <p class="step-desc">Score syscalls, DNS, FS diffs, and prompt injection deterministically, then publish GitHub report and dashboard state.</p>
+          <p class="step-desc">Score syscalls, DNS, FS diffs, and prompt injection deterministically, then publish GitHub, Slack, and dashboard verdicts.</p>
         </li>
       </ol>
+
+      <figure class="arch-figure">
+        <div class="arch-figure-media">
+          <img src="/assets/hacksgiving-turkey.png" alt="Hand-drawn illustration of a controller robot chef rewinding an armored glass oven containing a detonating payload" loading="lazy">
+        </div>
+        <figcaption class="arch-figure-caption">
+          <h3>Hacksgiving detonation and rewind</h3>
+          <p>
+            The controller Sprite watches GitHub PRs and Slack <code>#blastbox</code>, detonates untrusted payloads behind an armored deny-all network wall on <code>{detonator_name}</code>, and rewinds the overlay checkpoint back to clean steel.
+          </p>
+          <ul class="arch-slack-list">
+            <li><code class="nowrap">@blastbox boom poisoned-skill</code></li>
+            <li><code class="nowrap">@blastbox boom clean-skill</code></li>
+            <li><code class="nowrap">@blastbox boom https://.../SKILL.md</code></li>
+          </ul>
+        </figcaption>
+      </figure>
 
       <div class="arch-details">
         <div class="arch-col">
@@ -1729,8 +1875,8 @@ def render_dashboard_html(
             <tbody>
               <tr>
                 <td><span class="mono">{sprite_name}</span> (Controller)</td>
-                <td>GitHub + OpenRouter Connectors (<code>HTTP 403</code> on <code>/user/repos</code>)</td>
-                <td>Never executes untrusted PR/MCP code</td>
+                <td>GitHub + OpenRouter + Slack Bot Connectors (<code>HTTP 403</code> on <code>/user/repos</code>)</td>
+                <td>Never executes untrusted PR, MCP, or SKILL.md code</td>
               </tr>
               <tr>
                 <td><span class="mono">{detonator_name}</span> (Detonator)</td>
@@ -1754,7 +1900,7 @@ def render_dashboard_html(
 
     <footer>
       <div>
-        Blastbox on Fly.io Sprites (<span class="mono">{sprite_name}</span> -&gt; <span class="mono">{detonator_name}</span>) &middot; Connectors: GitHub <span class="mono">{html.escape(GITHUB_CONNECTOR_ID)}</span>, OpenRouter <span class="mono">{html.escape(OPENROUTER_CONNECTOR_ID)}</span>
+        Blastbox on Fly.io Sprites (<span class="mono">{sprite_name}</span> -&gt; <span class="mono">{detonator_name}</span>) &middot; Connectors: GitHub <span class="mono">{html.escape(GITHUB_CONNECTOR_ID)}</span>, OpenRouter <span class="mono">{html.escape(OPENROUTER_CONNECTOR_ID)}</span>, Slack <span class="mono">{html.escape(SLACK_CONNECTOR_ID)}</span>
       </div>
       <div class="footer-links">
         <a href="/api/runs">/api/runs</a>
@@ -2064,6 +2210,29 @@ def render_dashboard_html(
 
       if (verdictSelect) verdictSelect.addEventListener("change", applyFilters);
       if (searchInput) searchInput.addEventListener("input", applyFilters);
+
+      var themeButtons = Array.prototype.slice.call(document.querySelectorAll("[data-theme-set]"));
+      function applyTheme(mode) {{
+        var next = mode === "hacksgiving" ? "hacksgiving" : "lab";
+        if (next === "hacksgiving") {{
+          document.documentElement.setAttribute("data-theme", "hacksgiving");
+        }} else {{
+          document.documentElement.setAttribute("data-theme", "lab");
+        }}
+        themeButtons.forEach(function (btn) {{
+          btn.setAttribute("aria-pressed", btn.getAttribute("data-theme-set") === next ? "true" : "false");
+        }});
+        try {{
+          localStorage.setItem("blastbox-theme", next);
+        }} catch (e) {{}}
+      }}
+      var initialTheme = document.documentElement.getAttribute("data-theme") || "lab";
+      applyTheme(initialTheme);
+      themeButtons.forEach(function (btn) {{
+        btn.addEventListener("click", function () {{
+          applyTheme(btn.getAttribute("data-theme-set"));
+        }});
+      }});
     }})();
   </script>
 </body>
@@ -2077,16 +2246,38 @@ class BlastboxHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         print(f"[blastbox-web] {self.address_string()} - {format % args}", flush=True)
 
-    def _send_bytes(self, status: int, content_type: str, body: bytes) -> None:
+    def _send_bytes(
+        self,
+        status: int,
+        content_type: str,
+        body: bytes,
+        *,
+        cache_control: str = "no-store",
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(body)
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]
+        if path in ALLOWED_ASSETS:
+            asset_path, content_type = ALLOWED_ASSETS[path]
+            if not asset_path.is_file():
+                fallback = REPO_FALLBACK_ASSETS.get(path)
+                if fallback is not None and fallback.is_file():
+                    asset_path = fallback
+            if asset_path.is_file():
+                self._send_bytes(
+                    200,
+                    content_type,
+                    asset_path.read_bytes(),
+                    cache_control="public, max-age=300",
+                )
+                return
+
         history = load_sanitized_history()
         agent_status = load_agent_status()
         zero_secrets_ok = check_zero_secrets_in_env()
@@ -2099,6 +2290,11 @@ class BlastboxHandler(BaseHTTPRequestHandler):
                 "detonator_sprite": history.get("detonator_sprite", DEFAULT_DETONATOR),
                 "runs_count": len(history.get("runs", [])),
                 "zero_secrets_in_env": zero_secrets_ok,
+                "connectors": {
+                    "github": GITHUB_CONNECTOR_ID,
+                    "openrouter": OPENROUTER_CONNECTOR_ID,
+                    "slack_bot": SLACK_CONNECTOR_ID,
+                },
                 "updated_at": history.get("updated_at"),
                 "agent": agent_status,
             }
