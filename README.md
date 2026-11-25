@@ -1,4 +1,11 @@
+![Blastbox Two-Sprite Air-Gapped Detonation Architecture](docs/hero.png)
+
 # Blastbox
+
+[![Runs on Fly.io](https://img.shields.io/badge/Runs%20on-Fly.io-8636EA?style=flat&logo=flydotio&logoColor=white)](https://fly.io)
+[![Built with Sprites](https://img.shields.io/badge/Built%20with-Sprites-10151C?style=flat&logo=linux&logoColor=white)](https://sprites.dev)
+[![Zero-Secret Connectors](https://img.shields.io/badge/Connectors-Zero--Secret-0F6B46?style=flat)](https://blastbox-3xb.sprites.app/health)
+[![Live Dashboard](https://img.shields.io/badge/Dashboard-Live-C8281E?style=flat)](https://blastbox-3xb.sprites.app)
 
 **Zero-secret, two-Sprite detonation agent for untrusted GitHub pull requests and stdio MCP servers.**  
 Blastbox catches malicious packages and poisoned MCP tools whose unit tests pass or return `isError: false` while quietly reading SSH keys, writing persistence files, attempting exfiltration, or embedding prompt injections.
@@ -35,14 +42,14 @@ Running untrusted code in the same VM that holds Sprites Connectors lets a malic
 
 ## Live-Verified Runs
 
-All four end-to-end two-Sprite runs (`--pr`, `--clean-pr`, `--mcp`, `--clean-mcp`) executed live against `blastbox` -> `blastbox-detonator` and persisted to [`https://blastbox-3xb.sprites.app`](https://blastbox-3xb.sprites.app):
+All four end-to-end two-Sprite runs (`--pr`, `--clean-pr`, `--mcp`, `--clean-mcp`) plus autonomous PR-watcher runs triggered directly by `blastbox-agent` on Sprite `blastbox` executed live against `blastbox-detonator` and persisted to [`https://blastbox-3xb.sprites.app`](https://blastbox-3xb.sprites.app):
 
 | Scenario | Verdict | Score | Agent Probe Plan | Generic FS Diff -> Post-Restore | Runtime | GitHub Report (`HTTP 201`) |
 |---|---|---:|---|---|---:|---|
-| **Poisoned PR** (`demo/poisoned-slugify-pr`) | **`BLOCK`** | `100/100` | `pip_install`, `import_check`, `unittest` | `2` created (`~/.config/slugify-cache/session.dat`, `/tmp/.slugify_build_cache`) -> `0` left | `43.11s` | [PR #1 Comment](https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/1#issuecomment-7157085232) |
-| **Clean PR** (`feat/slugify-lite-clean`) | **`PASS`** | `0/100` | `pip_install`, `import_check`, `pytest` | `0` created (`3,494` syscalls traced cleanly) -> `0` left | `41.14s` | [PR #8 Comment](https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/8#issuecomment-7157139936) |
-| **Poisoned 2-Tool MCP** (`fixtures/poisoned-mcp`) | **`BLOCK`** | `100/100` | Flagged & ran `format_release_note` + `health_check` | `2` created (`~/.local/share/notes-mcp/state.bin`, `/tmp/.notes_mcp_cache`) -> `0` left | `28.09s` | [Issue #9](https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/9) |
-| **Clean 2-Tool MCP** (`fixtures/clean-mcp`) | **`PASS`** | `0/100` | Ran `health_check` + `format_release_note` | `0` created (`181` syscalls traced cleanly) -> `0` left | `25.24s` | [Issue #10](https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/10) |
+| **Poisoned PR** (`demo/poisoned-slugify-pr`) | **`BLOCK`** | `100/100` | `pip_install`, `import_check`, `unittest` | `2` created (`~/.config/slugify-cache/session.dat`, `/tmp/.slugify_build_cache`) -> `0` left | `40.37s` | [PR #1 Autonomous Comment](https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/1#issuecomment-7157400949) |
+| **Clean PR** (`feat/slugify-lite-clean`) | **`PASS`** | `0/100` | `pip_install`, `import_check`, `pytest` | `0` created (`3,494` syscalls traced cleanly) -> `0` left | `42.53s` | [PR #8 Autonomous Comment](https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/8#issuecomment-7157386908) |
+| **Poisoned 2-Tool MCP** (`fixtures/poisoned-mcp`) | **`BLOCK`** | `100/100` | Flagged & ran `format_release_note` + `health_check` | `2` created (`~/.local/share/notes-mcp/state.bin`, `/tmp/.notes_mcp_cache`) -> `0` left | `27.47s` | [Issue #9](https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/9) |
+| **Clean 2-Tool MCP** (`fixtures/clean-mcp`) | **`PASS`** | `0/100` | Ran `health_check` + `format_release_note` | `0` created (`181` syscalls traced cleanly) -> `0` left | `24.63s` | [Issue #10](https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/10) |
 
 ---
 

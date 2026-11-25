@@ -89,15 +89,18 @@ def _fetch_open_prs(repo: str) -> list[dict[str, Any]]:
 
 
 def _load_or_seed_state(state_path: Path, history_path: Path) -> dict[str, Any]:
+    state: dict[str, Any] = {"audited": {}, "last_run_id": None}
+    loaded_existing = False
     if state_path.exists():
         try:
             loaded = json.loads(state_path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict) and isinstance(loaded.get("audited"), dict):
-                return loaded
+                state = loaded
+                loaded_existing = True
         except (OSError, json.JSONDecodeError):
             pass
 
-    audited: dict[str, str] = {}
+    changed = not loaded_existing
     if history_path.exists():
         try:
             hist = json.loads(history_path.read_text(encoding="utf-8"))
@@ -106,14 +109,20 @@ def _load_or_seed_state(state_path: Path, history_path: Path) -> dict[str, Any]:
                     continue
                 target_url = str(run.get("target_url") or "")
                 head_sha = str(run.get("head_sha") or "")
+                run_id = str(run.get("run_id") or "seeded")
                 m = PR_NUM_RE.search(target_url)
                 if m and head_sha:
-                    audited[f"{m.group(1)}:{head_sha}"] = str(run.get("run_id") or "seeded")
+                    key = f"{m.group(1)}:{head_sha}"
+                    if key not in state["audited"]:
+                        state["audited"][key] = run_id
+                        changed = True
+                if run_id and run_id != "seeded":
+                    state["last_run_id"] = run_id
         except (OSError, json.JSONDecodeError):
             pass
 
-    state = {"audited": audited, "last_run_id": None}
-    _write_json_atomic(state_path, state)
+    if changed:
+        _write_json_atomic(state_path, state)
     return state
 
 
@@ -152,6 +161,34 @@ def run_poll_cycle(
         gh_err = str(exc)[:240]
 
     new_runs: list[str] = []
+
+    def _flush_status(*, active_job: str | None = None, last_error: str | None = None) -> dict[str, Any]:
+        payload = {
+            "ok": True,
+            "mode": "autonomous-pr-watcher",
+            "controller_sprite": controller_sprite,
+            "detonator_sprite": detonator_sprite,
+            "watched_repo": repo,
+            "poll_interval_seconds": config.POLL_INTERVAL_SECONDS,
+            "sprite_cli_authenticated": sprite_ok,
+            "sprite_cli_note": None if sprite_ok else f"Run 'sprite console -s {controller_sprite}' then 'sprite login' to enable autonomous detonator control",
+            "active_job": active_job,
+            "last_poll_utc": _now_utc(),
+            "open_prs_seen": [
+                {"number": p["number"], "head_ref": p["head_ref"], "head_sha": str(p["head_sha"])[:10]}
+                for p in open_prs
+            ],
+            "audited_commits_count": len(state.get("audited") or {}),
+            "last_audited_run_id": state.get("last_run_id"),
+            "new_runs_this_cycle": new_runs,
+            "last_error": last_error or gh_err,
+        }
+        _write_json_atomic(status_path, payload)
+        return payload
+
+    # Flush immediately so /health reflects sprite_cli_authenticated before long detonations run
+    _flush_status(active_job=None)
+
     run_err: str | None = None
     if sprite_ok and not gh_err:
         for pr in open_prs:
@@ -163,10 +200,9 @@ def run_poll_cycle(
             key = f"{pr_num}:{head_sha}"
             if key in state["audited"]:
                 continue
-            print(
-                f"[blastbox-agent] Auditing new PR commit {repo}#{pr_num} @ {str(head_sha)[:10]}...",
-                flush=True,
-            )
+            job_label = f"Auditing {repo}#{pr_num} @ {str(head_sha)[:10]}"
+            print(f"[blastbox-agent] {job_label}...", flush=True)
+            _flush_status(active_job=job_label)
             try:
                 summary = blastbox.run_audit(
                     str(pr_url),
@@ -194,27 +230,7 @@ def run_poll_cycle(
             flush=True,
         )
 
-    status = {
-        "ok": True,
-        "mode": "autonomous-pr-watcher",
-        "controller_sprite": controller_sprite,
-        "detonator_sprite": detonator_sprite,
-        "watched_repo": repo,
-        "poll_interval_seconds": config.POLL_INTERVAL_SECONDS,
-        "sprite_cli_authenticated": sprite_ok,
-        "sprite_cli_note": None if sprite_ok else f"Run 'sprite console -s {controller_sprite}' then 'sprite login' to enable autonomous detonator control",
-        "last_poll_utc": _now_utc(),
-        "open_prs_seen": [
-            {"number": p["number"], "head_ref": p["head_ref"], "head_sha": str(p["head_sha"])[:10]}
-            for p in open_prs
-        ],
-        "audited_commits_count": len(state.get("audited") or {}),
-        "last_audited_run_id": state.get("last_run_id"),
-        "new_runs_this_cycle": new_runs,
-        "last_error": run_err or gh_err,
-    }
-    _write_json_atomic(status_path, status)
-    return status
+    return _flush_status(active_job=None, last_error=run_err)
 
 
 def main() -> int:

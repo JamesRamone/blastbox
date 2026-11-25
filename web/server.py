@@ -549,11 +549,13 @@ def render_dashboard_html(
     if isinstance(agent_status, dict):
         watched_repo = html.escape(str(agent_status.get("watched_repo") or ""))
         cli_auth = bool(agent_status.get("sprite_cli_authenticated"))
-        agent_note = (
-            f"Watching {watched_repo} (autonomous control active)"
-            if cli_auth
-            else f"Watching {watched_repo} (awaiting controller sprite login)"
-        )
+        active_job = str(agent_status.get("active_job") or "").strip()
+        if active_job:
+            agent_note = html.escape(active_job)
+        elif cli_auth:
+            agent_note = f"Watching {watched_repo} (autonomous control active)"
+        else:
+            agent_note = f"Watching {watched_repo} (awaiting controller sprite login)"
     else:
         agent_note = f"Unlabeled {detonator_name}, deny-all egress, 0 tokens"
 
