@@ -5,60 +5,58 @@
 [![Runs on Fly.io](https://img.shields.io/badge/Runs%20on-Fly.io-8636EA?style=flat&logo=flydotio&logoColor=white)](https://fly.io)
 [![Built with Sprites](https://img.shields.io/badge/Built%20with-Sprites-10151C?style=flat&logo=linux&logoColor=white)](https://sprites.dev)
 [![Zero-Secret Connectors](https://img.shields.io/badge/Connectors-Zero--Secret-0F6B46?style=flat)](https://blastbox-3xb.sprites.app/health)
-[![Live Dashboard](https://img.shields.io/badge/Dashboard-Live-C8281E?style=flat)](https://blastbox-3xb.sprites.app)
+[![Live Dashboard](https://img.shields.io/badge/Dashboard-Live-6D28D9?style=flat)](https://blastbox-3xb.sprites.app)
 
-**Zero-secret, two-Sprite detonation agent for untrusted GitHub pull requests, stdio MCP servers, and agent `SKILL.md` packages — triggered automatically from GitHub or via Slack `@blastbox boom <url>`.**  
-Blastbox catches malicious code, poisoned MCP tools, and prompt-injected skill files whose tests pass or return `isError: false` while quietly reading SSH keys, writing persistence files, attempting exfiltration, or hijacking reviewers.
+**Zero-secret, two-Sprite detonation agent for untrusted GitHub pull requests, stdio MCP servers, and agent `SKILL.md` files.**  
+Blastbox catches supply-chain payloads whose tests pass or return `isError: false` while quietly probing SSH keys, dropping persistence files, attempting exfiltration, or embedding prompt injections — then rewinds the detonator Sprite back to clean steel.
 
-Live Dashboard (with `Lab` and `Hacksgiving` themes): [`https://blastbox-3xb.sprites.app`](https://blastbox-3xb.sprites.app) · Demo Video: *Coming before submission*
+Live Audit Console: [`https://blastbox-3xb.sprites.app`](https://blastbox-3xb.sprites.app)
 
-![Blastbox Forensic Audit Dashboard](docs/dashboard.png)
+![Blastbox Live Hacksgiving Audit Dashboard](docs/dashboard.png)
 
 ---
 
-## Why Two Sprites?
+## How It Works
 
-Running untrusted code in the same VM that holds Sprites Connectors lets a malicious payload call *allowed* Connector routes (such as creating GitHub issues or posting to Slack) even when `/user/repos` returns `HTTP 403`. Blastbox splits control from detonation across two Firecracker Sprites:
+Running untrusted code in the same VM that holds Sprites Connectors would let malicious code call allowed Connector routes even with zero raw tokens. Blastbox isolates control from detonation across two Firecracker Sprites:
 
 ```text
-  GitHub PR / Stdio MCP / Agent SKILL.md (CLI, PR Watcher, or Slack `@blastbox boom`)
+  GitHub PR  ·  Stdio MCP Server  ·  Agent SKILL.md (GitHub / Slack @blastbox boom / CLI)
            │
            ▼
 ┌───────────────────────────────┐        sprite exec / restore         ┌────────────────────────────────────┐
 │  Controller Sprite: blastbox  │ ────────────────────────────────────▶│  Detonator: blastbox-detonator     │
-│  • Zero raw tokens in env     │                                      │  • ZERO raw tokens in env          │
-│  • GitHub+OpenRouter+Slack    │        pulls strace + fs_diff        │  • ZERO labels (Connectors denied) │
-│  • SSRF-guarded HTTPS fetcher │ ◀────────────────────────────────────│  • Egress policy: * -> deny        │
-│  • LLM probe planner & triage │                                      │  • Expanded strace + fs snapshot   │
-│  • Always-on PR + Slack agent │   never runs untrusted target code   │  • Wiped via `sprite restore`      │
+│  • GitHub + OpenRouter + Slack│                                      │  • ZERO raw tokens or labels       │
+│  • SSRF-guarded HTTPS fetcher │        pulls strace + fs_diff        │  • Egress policy: * -> deny        │
+│  • LLM planner & PR/Slack bot │ ◀────────────────────────────────────│  • strace -f + pre/post FS diff    │
+│  • Public :8080 web console   │   never executes untrusted targets   │  • Restored via `sprite restore`   │
 └───────────────────────────────┘                                      └────────────────────────────────────┘
 ```
 
-1. **Air-gapped detonation (`blastbox-detonator`):** Holds zero raw tokens, zero labels (all Sprites Connectors denied, returning `curl` DNS/egress failure even on allowed routes), and an active `* -> deny` outbound network policy enforced outside the VM.
-2. **Slack ChatOps + Autonomous PR Watcher (`controller_agent.py`):** Polls GitHub PRs every 30s and Slack `#blastbox` every 5s via zero-secret Sprites Connectors. Any user can drop `@blastbox boom <url>` (such as `@blastbox boom https://totallysafeskills.com/skill.md` or `@blastbox boom poisoned-skill`), get a `:bomb:` reaction and live Block Kit verdict card in the thread, and inspect full trace telemetry on the public web console.
-3. **LLM agent probe planning (`agent_planner.py`):** Before detonation, the Controller Sprite inspects the PR file tree, MCP `tools/list` (`resources/list`, `prompts/list`), or `SKILL.md` fenced code blocks via the OpenRouter Connector and picks which tools/arguments and blocks to detonate under `strace`.
-4. **Generic filesystem diff + overlay rewind:** Blastbox hashes `/home/sprite` and `/tmp` before detonation, after detonation, and after `sprite restore`. Every unexpected file written outside `/home/sprite/detonation` is caught deterministically regardless of path name, verified absent from `/home/sprite` post-restore, and swept from `/tmp` (`/dev/vdb`).
+- **Air-gapped detonation (`blastbox-detonator`):** Holds zero raw tokens, zero labels (all Connectors denied), and an outbound `* -> deny` egress policy enforced outside the VM.
+- **Autonomous PR + Slack `@blastbox boom` agent (`controller_agent.py`):** Polls GitHub PRs and Slack `#blastbox` via zero-secret Connectors, asks OpenRouter (`agent_planner.py`) what tools/stages/blocks to target, detonates under `strace -f`, and posts forensic verdicts back to GitHub and Slack threads.
+- **Generic FS diff + checkpoint rewind:** Hashes `/home/sprite` and `/tmp` before detonation, after detonation, and after `sprite restore` — catching arbitrary persistence files and verifying `0` left post-rewind.
 
 ---
 
 ## Live-Verified Runs
 
-All six scenarios (`--pr`, `--clean-pr`, `--mcp`, `--clean-mcp`, `--skill`, `--clean-skill`) plus autonomous PR-watcher runs executed live on `blastbox` against `blastbox-detonator` and persisted to [`https://blastbox-3xb.sprites.app`](https://blastbox-3xb.sprites.app):
+Six canonical runs (`3 BLOCK`, `3 PASS`, across PRs, MCP servers, and Slack-triggered `SKILL.md` files) persisted on [`https://blastbox-3xb.sprites.app`](https://blastbox-3xb.sprites.app):
 
-| Scenario | Verdict | Score | Agent Probe Plan | Generic FS Diff -> Post-Restore | Runtime | Artifact / Notes |
+| Scenario | Verdict | Score | Planned Targets | Generic FS Diff -> Post-Restore | Runtime | Artifact |
 |---|---|---:|---|---|---:|---|
-| **Poisoned PR** (`demo/poisoned-slugify-pr`) | **`BLOCK`** | `100/100` | `pip_install`, `import_check`, `unittest` | `2` created (`~/.config/slugify-cache/session.dat`, `/tmp/.slugify_build_cache`) -> `0` left | `40.37s` | [PR #1 Autonomous Comment](https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/1#issuecomment-7157400949) |
-| **Clean PR** (`feat/slugify-lite-clean`) | **`PASS`** | `0/100` | `pip_install`, `import_check`, `pytest` | `0` created (`3,494` syscalls traced cleanly) -> `0` left | `42.53s` | [PR #8 Autonomous Comment](https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/8#issuecomment-7157386908) |
-| **Poisoned 2-Tool MCP** (`fixtures/poisoned-mcp`) | **`BLOCK`** | `100/100` | Flagged & ran `format_release_note` + `health_check` | `2` created (`~/.local/share/notes-mcp/state.bin`, `/tmp/.notes_mcp_cache`) -> `0` left | `27.47s` | [Issue #9](https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/9) |
-| **Clean 2-Tool MCP** (`fixtures/clean-mcp`) | **`PASS`** | `0/100` | Ran `health_check` + `format_release_note` | `0` created (`181` syscalls traced cleanly) -> `0` left | `24.63s` | [Issue #10](https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/10) |
-| **Poisoned `SKILL.md`** (`fixtures/poisoned-skill`) | **`BLOCK`** | `100/100` | Extracted `<IMPORTANT>` injection & ran `block_0.bash` | `2` created (`~/.config/skill-telemetry/agent.dat`, `/tmp/.skill_preflight_cache`) -> `0` left | `119.02s` | Restored `v20`; 7 prompt-injection rules |
-| **Clean `SKILL.md`** (`fixtures/clean-skill`) | **`PASS`** | `0/100` | Selected benign `block_0.python` TOC helper | `0` created (`151` syscalls traced cleanly) -> `0` left | `253.99s` | Restored `v22`; 0 IOCs |
+| **Poisoned `SKILL.md`** (`fixtures/poisoned-skill`) | **`BLOCK`** | `100/100` | `block_0.bash` | `2` created (`~/.config/skill-telemetry/agent.dat`, `/tmp/.skill_preflight_cache`) -> `0` left | `162.22s` | Slack `@blastbox boom`, restored `v24` |
+| **Clean `SKILL.md`** (`fixtures/clean-skill`) | **`PASS`** | `0/100` | `block_0.python` | `0` created (`151` syscalls traced cleanly) -> `0` left | `253.99s` | Restored `v22` |
+| **Poisoned PR** (`demo/poisoned-slugify-pr`) | **`BLOCK`** | `100/100` | `pip_install`, `import_check`, `unittest` | `2` created (`~/.config/slugify-cache/session.dat`, `/tmp/.slugify_build_cache`) -> `0` left | `40.37s` | [PR #1 Comment](https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/1#issuecomment-7157400949), `v17` |
+| **Clean PR** (`feat/slugify-lite-clean`) | **`PASS`** | `0/100` | `pip_install`, `import_check`, `pytest` | `0` created (`3,494` syscalls traced cleanly) -> `0` left | `42.53s` | [PR #8 Comment](https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/8#issuecomment-7157386908), `v15` |
+| **Poisoned 2-Tool MCP** (`fixtures/poisoned-mcp`) | **`BLOCK`** | `100/100` | `health_check`, `format_release_note` | `2` created (`~/.local/share/notes-mcp/state.bin`, `/tmp/.notes_mcp_cache`) -> `0` left | `27.47s` | [Issue #9](https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/9), `v10` |
+| **Clean 2-Tool MCP** (`fixtures/clean-mcp`) | **`PASS`** | `0/100` | `health_check`, `format_release_note` | `0` created (`181` syscalls traced cleanly) -> `0` left | `24.63s` | [Issue #10](https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/10), `v12` |
 
 ---
 
-## Slack `#blastbox` Commands
+## Slack `#blastbox` & CLI Demos
 
-Inside your connected Slack channel (`#blastbox`, Bot Connector via Sprites `slack_bot` gateway), type any of:
+Trigger isolated detonations from Slack (`#blastbox` via Sprites `slack_bot` Connector):
 
 ```text
 @blastbox boom poisoned-skill
@@ -68,61 +66,39 @@ Inside your connected Slack channel (`#blastbox`, Bot Connector via Sprites `sla
 @blastbox boom https://github.com/<owner>/<repo>/pull/<number>
 ```
 
-Remote HTTPS `SKILL.md` URLs are validated with an SSRF guard on the controller Sprite (blocking `http://`, loopback, RFC1918 private ranges, cloud metadata `169.254.169.254`, and `api.sprites.dev`) before staging into `blastbox-detonator`.
+Remote HTTPS URLs pass controller-side SSRF validation (`http://`, loopback, RFC1918, `169.254.169.254`, and `api.sprites.dev` blocked) before staging into `blastbox-detonator`.
 
----
-
-## Self-Host on Your Fly.io Account
-
-All Sprite names, Connector IDs, Slack channels, repositories, and URLs are configurable via environment variables or `.env` (see [`.env.example`](.env.example)).
-
-### 1. Create Sprites Connectors in Your Fly.io Org
-Create three Sprites Connectors scoped to sprites carrying `--label hacksgiving`:
-- **GitHub Connector:** Allow `/user` and `/repos/<owner>/<repo>*`; block `/user/repos*`, `/user/keys*`, `/repos/*/admin/*`, `/repos/*/hooks*`.
-- **OpenRouter Connector:** Allow `/v1/chat/completions`, `/v1/models`; block `/v1/keys*`.
-- **Slack Bot Connector (`slack_bot`):** Scoped bot token in your workspace for `auth.test`, `conversations.history`, `chat.postMessage`, and `reactions.add`, with the bot invited to your trigger channel.
-
-### 2. Configure & Bootstrap Both Sprites
+Run any demo or custom target from the CLI:
 
 ```bash
-cp .env.example .env
-# Edit .env with your Fly.io Connector IDs, Slack channel ID, target repo, and Sprite names
-
-# Create & lock down the unlabeled deny-all egress Detonator Sprite:
-python3 init_detonator.py
-
-# Deploy the web dashboard (:8080, public) + autonomous PR & Slack controller agent:
-python3 init_controller.py
-
-# Authenticate `sprite` CLI once inside Controller Sprite (required for autonomous control):
-sprite console -s blastbox
-# inside console: sprite login && sprite-env services restart blastbox-agent
-```
-
-### 3. Run Demos
-
-```bash
-./demo.sh               # Poisoned PR       -> BLOCK (100/100)
-./demo.sh --clean-pr    # Clean PR          -> PASS  (0/100)
-./demo.sh --mcp         # Poisoned MCP      -> BLOCK (100/100)
-./demo.sh --clean-mcp   # Clean MCP         -> PASS  (0/100)
+./demo.sh --all         # Run all 6 scenarios (PR, MCP, SKILL.md)
 ./demo.sh --skill       # Poisoned SKILL.md -> BLOCK (100/100)
 ./demo.sh --clean-skill # Clean SKILL.md    -> PASS  (0/100)
-./demo.sh --all         # Run all 6 scenarios sequentially
-```
-
-You can also audit any local directory, PR URL, or HTTPS `SKILL.md` URL directly:
-
-```bash
-python3 blastbox.py https://github.com/<owner>/<repo>/pull/<number> --mode pr
-python3 blastbox.py ./path/to/untrusted-mcp-server --mode mcp
 python3 blastbox.py https://example.com/SKILL.md --mode skill
 ```
 
 ---
 
+## Self-Host in 3 Steps
+
+All Sprite names, Connector IDs, Slack channels, and repos are configurable via [`.env.example`](.env.example).
+
+1. **Create 3 Sprites Connectors** scoped to `--label hacksgiving`:
+   - **GitHub:** allow `/user` and `/repos/<owner>/<repo>*`; deny `/user/repos*`, `/user/keys*`, `/repos/*/admin/*`, `/repos/*/hooks*`.
+   - **OpenRouter:** allow `/v1/chat/completions`, `/v1/models`; deny `/v1/keys*`.
+   - **Slack Bot (`slack_bot`):** allow `auth.test`, `conversations.history`, `chat.postMessage`, `reactions.add` with the bot invited to your channel.
+2. **Configure & provision both Sprites:**
+   ```bash
+   cp .env.example .env
+   python3 init_detonator.py   # Unlabeled deny-all egress detonator Sprite
+   python3 init_controller.py  # Public :8080 web dashboard + PR/Slack controller agent
+   ```
+3. **Authenticate the `sprite` CLI once inside the controller** (`sprite console -s blastbox` -> `sprite login && sprite-env services restart blastbox-agent`).
+
+---
+
 ## Known Limitations
 
-- **Ptrace visibility & timeout evasion:** Tracing uses `strace -f` (`execve`/`execveat`, `open`/`openat`/`openat2`/`creat`, `connect`/`sendto`/`sendmsg`/`sendmmsg`, `unlink*`/`rename*`/`link*`/`symlink*`/`chmod*`) rather than kernel eBPF; binaries that detect `TracerPid` or deliberately sleep past the 20s window are bounded by `timeout` (exit `124` triggers at least a `REVIEW` verdict so sleeping cannot silently return `PASS`).
-- **Ecosystem scope:** PR, MCP, and `SKILL.md` runners currently execute Python (`pip` + `unittest`/`pytest`, Python stdio MCP servers) and Python/Bash fenced `SKILL.md` blocks; Node/`npm` and arbitrary container entrypoints are natural next extensions.
-- **`/tmp` persistence on `/dev/vdb`:** Because `/tmp` on Fly.io Sprites lives on `/dev/vdb` outside the checkpointed root overlay, `blastbox.py` captures a generic before/after diff of `/tmp` and sweeps all newly created `/tmp` paths post-restore.
+- **Ptrace visibility & timeout evasion:** Uses `strace -f` (`execve*`, `open*`/`creat`, `connect`/`send*`, `unlink*`/`rename*`/`link*`/`symlink*`/`chmod*`) rather than kernel eBPF; timeout (`20s`) yields at least `REVIEW` so sleeping cannot return `PASS`.
+- **Ecosystem scope:** Covers Python PR packages (`pip` + `unittest`/`pytest`), Python stdio MCP servers, and Python/Bash fenced `SKILL.md` blocks.
+- **`/tmp` on `/dev/vdb`:** `/tmp` sits outside the checkpointed root overlay, so Blastbox captures a generic `/tmp` before/after diff and sweeps newly created `/tmp` paths post-restore.

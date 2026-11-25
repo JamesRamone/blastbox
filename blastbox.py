@@ -1212,11 +1212,12 @@ def _build_sanitized_run_record(
         and not restore_info.get("tmp_remaining_after_sweep")
     )
 
-    planned_items = (
-        [c.get("tool") for c in (agent_plan.get("calls") or []) if isinstance(c, dict)]
-        if agent_plan.get("mode") == "mcp"
-        else (agent_plan.get("stages") or [])
-    )
+    if agent_plan.get("mode") == "mcp":
+        planned_items = [c.get("tool") for c in (agent_plan.get("calls") or []) if isinstance(c, dict)]
+    elif agent_plan.get("mode") == "skill":
+        planned_items = list(agent_plan.get("targets") or [])
+    else:
+        planned_items = list(agent_plan.get("stages") or [])
 
     record = {
         "run_id": f"{ts_compact}-{suffix}",

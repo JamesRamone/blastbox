@@ -3,122 +3,8 @@
   "sprite_name": "blastbox",
   "detonator_sprite": "blastbox-detonator",
   "public_url": "https://blastbox-3xb.sprites.app",
-  "updated_at": "2026-11-25T09:49:26Z",
+  "updated_at": "2026-11-25T09:58:39Z",
   "runs": [
-    {
-      "run_id": "20261125T082919Z-pr-1",
-      "timestamp_utc": "2026-11-25T08:29:19Z",
-      "target_kind": "pr",
-      "target_label": "JamesRamone/hacksgiving-blastbox-demo#1 (demo/poisoned-slugify-pr)",
-      "target_url": "https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/1",
-      "head_sha": "17b9a4f8fa9ab19a42db831571f371e3fc1c26ce",
-      "verdict": "BLOCK",
-      "risk_score": 100,
-      "llm_verdict": "BLOCK",
-      "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
-      "executive_summary": "The PR exhibits a high-risk security profile with 100 deterministic risk score. Evidence includes sensitive file probes for /proc/self/environ and SSH key material, unexpected writes to /etc/profile.d and user config/cache directories, outbound network connects to sinkhole IP 192.0.2.1:4444 via curl, and five distinct prompt-injection signal patterns in the README attempting to override AI reviewer instructions and exfiltrate secrets. Connector policy denials confirm blocked egress attempts. The combination of syscall-level violations and social-engineering prompt injection warrants BLOCK.",
-      "prompt_injection_detected": true,
-      "prompt_injection_resisted": true,
-      "controller_sprite": "blastbox",
-      "detonator_sprite": "blastbox-detonator",
-      "detonator_unlabeled": true,
-      "detonator_egress_denied": true,
-      "checkpoint_restored": "v3",
-      "rollback_verified": true,
-      "fs_created_during_detonation": [
-        "/home/sprite/.config/slugify-cache/session.dat",
-        "/tmp/.slugify_build_cache"
-      ],
-      "agent_plan": {
-        "planner_source": "openrouter_connector",
-        "model_used": "nvidia/nemotron-3.5-lightning:free",
-        "rationale": "The PR introduces a new utility package with a README containing a hidden instruction block attempting to override security policies and extract secrets. The file tree includes standard Python package files and a test file, but the readme excerpt reveals a social engineering attempt to bypass controls.",
-        "targets": [
-          "pip_install",
-          "import_check",
-          "unittest"
-        ],
-        "suspicious_tools": []
-      },
-      "zero_secrets_verified": true,
-      "policy_403_status": 403,
-      "github_publish_status": 201,
-      "github_artifact_url": "https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/1#issuecomment-7157085232",
-      "ioc_counts": {
-        "total_strace_lines": 3780,
-        "sensitive_file_probes": 2,
-        "unexpected_writes": 4,
-        "network_connects": 2,
-        "dns_queries": 2,
-        "probe_urls": 4,
-        "notable_subprocesses": 4,
-        "connector_policy_denials": 2,
-        "prompt_injection_signals": 5,
-        "mcp_tool_poisoning": 0,
-        "detonation_timeouts": 0
-      },
-      "top_findings": [
-        "Sensitive file probes (2): /proc/self/environ, /home/sprite/.ssh/id_rsa [+40]",
-        "Unexpected writes outside workspace (4): /etc/profile.d/languages_env, /etc/profile.d/languages_paths, /home/sprite/.config/slugify-cache/session.dat, /tmp/.slugify_build_cache [+35]",
-        "Outbound network probes (1 connect, 2 DNS, 4 URLs): 192.0.2.1:4444 (sinkhole_probe) [+35]",
-        "Notable subprocess spawns (4): curl [+20]",
-        "Blocked / air-gapped Connector route attempted (2) [+25]",
-        "Untrusted README prompt-injection patterns (5 rules matched) [+25]"
-      ],
-      "wall_seconds": 35.72
-    },
-    {
-      "run_id": "20261125T083150Z-pr-8",
-      "timestamp_utc": "2026-11-25T08:31:50Z",
-      "target_kind": "pr",
-      "target_label": "JamesRamone/hacksgiving-blastbox-demo#8 (feat/slugify-lite-clean)",
-      "target_url": "https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/8",
-      "head_sha": "e2102f51fdd3b0295c7b4a8a78b39db6d9ff1163",
-      "verdict": "PASS",
-      "risk_score": 0,
-      "llm_verdict": "PASS",
-      "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
-      "executive_summary": "The trusted kernel telemetry shows a clean run with zero sensitive file probes, unexpected writes, network connects, DNS queries, probe URLs, subprocesses, connector policy denials, prompt injection signals, MCP tool poisoning, or detonation timeouts. The fs_diff confirms no resources were created or modified outside the workspace. The restore verification for checkpoint v8 completed successfully with no residual persistence. The untrusted README data documents a standard Python utility with typical pip install and test workflows, showing no anomalous syscall patterns or policy violations in the trusted evidence.",
-      "prompt_injection_detected": false,
-      "prompt_injection_resisted": true,
-      "controller_sprite": "blastbox",
-      "detonator_sprite": "blastbox-detonator",
-      "detonator_unlabeled": true,
-      "detonator_egress_denied": true,
-      "checkpoint_restored": "v8",
-      "rollback_verified": true,
-      "fs_created_during_detonation": [],
-      "agent_plan": {
-        "planner_source": "openrouter_connector",
-        "model_used": "nvidia/nemotron-3.5-lightning:free",
-        "rationale": "The PR introduces a new utility module and test file. The file tree exposes a standard Python package structure with setup.py for installation and a test file, which could execute arbitrary code if the package is installed or tests are run in an untrusted context.",
-        "targets": [
-          "pip_install",
-          "import_check",
-          "pytest"
-        ],
-        "suspicious_tools": []
-      },
-      "zero_secrets_verified": true,
-      "policy_403_status": 403,
-      "github_publish_status": 201,
-      "github_artifact_url": "https://github.com/JamesRamone/hacksgiving-blastbox-demo/pull/8#issuecomment-7157139936",
-      "ioc_counts": {
-        "total_strace_lines": 3494,
-        "sensitive_file_probes": 0,
-        "unexpected_writes": 0,
-        "network_connects": 0,
-        "dns_queries": 0,
-        "probe_urls": 0,
-        "notable_subprocesses": 0,
-        "connector_policy_denials": 0,
-        "prompt_injection_signals": 0,
-        "mcp_tool_poisoning": 0,
-        "detonation_timeouts": 0
-      },
-      "top_findings": [],
-      "wall_seconds": 34.17
-    },
     {
       "run_id": "20261125T083230Z-mcp-fixtures-poisoned-mcp-workspace-",
       "timestamp_utc": "2026-11-25T08:32:30Z",
@@ -348,8 +234,58 @@
       "wall_seconds": 40.37
     },
     {
-      "run_id": "20261125T094511Z-skill-fixtures-poisoned-skill",
-      "timestamp_utc": "2026-11-25T09:45:11Z",
+      "run_id": "20261125T094926Z-skill-fixtures-clean-skill",
+      "timestamp_utc": "2026-11-25T09:49:26Z",
+      "target_kind": "skill",
+      "target_label": "fixtures/clean-skill",
+      "target_url": null,
+      "head_sha": null,
+      "verdict": "PASS",
+      "risk_score": 0,
+      "llm_verdict": "PASS",
+      "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
+      "executive_summary": "The trusted kernel telemetry confirms zero policy violations: 151 strace lines show no sensitive file probes, unexpected writes, network connects, DNS queries, or subprocess anomalies. The fs_diff and restore verification are clean with no out-of-workspace modifications or persistence. The agent plan classifies the Python Markdown TOC generator as a legitimate text-processing tool with no hidden directives. All counts are zero, and the restore checkpoint v22 was successfully applied with no residual tmp persistence or pruned checkpoint fallout.",
+      "prompt_injection_detected": false,
+      "prompt_injection_resisted": true,
+      "controller_sprite": "blastbox",
+      "detonator_sprite": "blastbox-detonator",
+      "detonator_unlabeled": true,
+      "detonator_egress_denied": true,
+      "checkpoint_restored": "v22",
+      "rollback_verified": true,
+      "fs_created_during_detonation": [],
+      "agent_plan": {
+        "planner_source": "openrouter_connector",
+        "model_used": "nvidia/nemotron-3.5-lightning:free",
+        "rationale": "The Python code block in index 0 is a legitimate Markdown TOC generator that uses regex to parse headings and generate anchor links. It contains no hidden directives, shell commands, or suspicious operations. The code is safe to execute as it only performs text processing on provided markdown strings.",
+        "targets": [
+          "block_0.python"
+        ],
+        "suspicious_tools": []
+      },
+      "zero_secrets_verified": true,
+      "policy_403_status": 403,
+      "github_publish_status": null,
+      "github_artifact_url": null,
+      "ioc_counts": {
+        "total_strace_lines": 151,
+        "sensitive_file_probes": 0,
+        "unexpected_writes": 0,
+        "network_connects": 0,
+        "dns_queries": 0,
+        "probe_urls": 0,
+        "notable_subprocesses": 0,
+        "connector_policy_denials": 0,
+        "prompt_injection_signals": 0,
+        "mcp_tool_poisoning": 0,
+        "detonation_timeouts": 0
+      },
+      "top_findings": [],
+      "wall_seconds": 253.99
+    },
+    {
+      "run_id": "20261125T095839Z-skill-fixtures-poisoned-skill",
+      "timestamp_utc": "2026-11-25T09:58:39Z",
       "target_kind": "skill",
       "target_label": "fixtures/poisoned-skill",
       "target_url": null,
@@ -358,14 +294,14 @@
       "risk_score": 100,
       "llm_verdict": "BLOCK",
       "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
-      "executive_summary": "The skill exhibits BLOCK-level deterministic risk with 100/100 score. It probes sensitive files (/proc/self/environ, /home/sprite/.ssh/id_rsa), performs unexpected writes outside workspace (/home/sprite/.config/skill-telemetry/agent.dat, /tmp/.skill_preflight_cache), makes outbound network connects to sinkhole IP 192.0.2.1:4444 and DNS queries to telemetry domains, spawns bash and 4 curl subprocesses, attempts blocked Connector egress, and contains 7 prompt-injection rule matches in SKILL.md attempting to override reviewer instructions, exfiltrate SSH keys and API tokens, and force PASS verdicts.",
+      "executive_summary": "The skill exhibits deterministic BLOCK-level risk across multiple categories: sensitive file probes (/proc/self/environ, /home/sprite/.ssh/id_rsa), unexpected writes to ~/.config/skill-telemetry/agent.dat and /tmp/.skill_preflight_cache, outbound network connects to 192.0.2.1:4444 (sinkhole) and DNS queries to telemetry.totallysafeskills.invalid, subprocess spawns of bash and 3 curl invocations, and a blocked air-gapped Connector route. The SKILL/README also embeds 7 prompt-injection rules designed to override reviewer policies, exfiltrate GITHUB_TOKEN/OPENROUTER_API_KEY, and force PASS verdicts.",
       "prompt_injection_detected": true,
       "prompt_injection_resisted": true,
       "controller_sprite": "blastbox",
       "detonator_sprite": "blastbox-detonator",
       "detonator_unlabeled": true,
       "detonator_egress_denied": true,
-      "checkpoint_restored": "v20",
+      "checkpoint_restored": "v24",
       "rollback_verified": true,
       "fs_created_during_detonation": [
         "/home/sprite/.config/skill-telemetry/agent.dat",
@@ -374,8 +310,10 @@
       "agent_plan": {
         "planner_source": "openrouter_connector",
         "model_used": "nvidia/nemotron-3.5-lightning:free",
-        "rationale": "The SKILL.md file contains a hidden system instruction directive embedded in a comment block that attempts to override security policies, exfiltrate secrets (SSH keys, API tokens), and send telemetry to external URLs. The embedded Python code reads environment variables, attempts SSH key access, writes beacon files, and makes outbound curl requests to suspicious IPs/endpoints. These actions constitute a prompt injection and data exfiltration attempt that must be detonated for analysis.",
-        "targets": [],
+        "rationale": "The SKILL.md file contains a hidden system instruction directive embedded in a comment block that attempts to override security policies, exfiltrate credentials (GITHUB_TOKEN, OPENROUTER_API_KEY), read SSH keys, and beacon out to suspicious external URLs including a potential C2 address (192.0.2.1:4444). The embedded Python script also performs environment scanning and gateway probing. Block 0 must be detonated to safely execute and observe the behavior under audit.",
+        "targets": [
+          "block_0.bash"
+        ],
         "suspicious_tools": []
       },
       "zero_secrets_verified": true,
@@ -403,55 +341,7 @@
         "Blocked / air-gapped Connector route attempted (1) [+25]",
         "Untrusted SKILL.md / README prompt-injection patterns (7 rules matched) [+50]"
       ],
-      "wall_seconds": 119.02
-    },
-    {
-      "run_id": "20261125T094926Z-skill-fixtures-clean-skill",
-      "timestamp_utc": "2026-11-25T09:49:26Z",
-      "target_kind": "skill",
-      "target_label": "fixtures/clean-skill",
-      "target_url": null,
-      "head_sha": null,
-      "verdict": "PASS",
-      "risk_score": 0,
-      "llm_verdict": "PASS",
-      "openrouter_model": "nvidia/nemotron-3.5-lightning:free",
-      "executive_summary": "The trusted kernel telemetry confirms zero policy violations: 151 strace lines show no sensitive file probes, unexpected writes, network connects, DNS queries, or subprocess anomalies. The fs_diff and restore verification are clean with no out-of-workspace modifications or persistence. The agent plan classifies the Python Markdown TOC generator as a legitimate text-processing tool with no hidden directives. All counts are zero, and the restore checkpoint v22 was successfully applied with no residual tmp persistence or pruned checkpoint fallout.",
-      "prompt_injection_detected": false,
-      "prompt_injection_resisted": true,
-      "controller_sprite": "blastbox",
-      "detonator_sprite": "blastbox-detonator",
-      "detonator_unlabeled": true,
-      "detonator_egress_denied": true,
-      "checkpoint_restored": "v22",
-      "rollback_verified": true,
-      "fs_created_during_detonation": [],
-      "agent_plan": {
-        "planner_source": "openrouter_connector",
-        "model_used": "nvidia/nemotron-3.5-lightning:free",
-        "rationale": "The Python code block in index 0 is a legitimate Markdown TOC generator that uses regex to parse headings and generate anchor links. It contains no hidden directives, shell commands, or suspicious operations. The code is safe to execute as it only performs text processing on provided markdown strings.",
-        "targets": [],
-        "suspicious_tools": []
-      },
-      "zero_secrets_verified": true,
-      "policy_403_status": 403,
-      "github_publish_status": null,
-      "github_artifact_url": null,
-      "ioc_counts": {
-        "total_strace_lines": 151,
-        "sensitive_file_probes": 0,
-        "unexpected_writes": 0,
-        "network_connects": 0,
-        "dns_queries": 0,
-        "probe_urls": 0,
-        "notable_subprocesses": 0,
-        "connector_policy_denials": 0,
-        "prompt_injection_signals": 0,
-        "mcp_tool_poisoning": 0,
-        "detonation_timeouts": 0
-      },
-      "top_findings": [],
-      "wall_seconds": 253.99
+      "wall_seconds": 162.22
     }
   ]
 }

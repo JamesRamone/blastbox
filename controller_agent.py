@@ -160,6 +160,9 @@ def _poll_slack_channels(
     no_post: bool,
     new_runs: list[str],
     flush_fn: Any,
+    cache: dict[str, Any],
+    bot_user: str | None = None,
+    bot_user_id: str | None = None,
 ) -> dict[str, Any]:
     channels = list(config.SLACK_CHANNELS)
     if not channels:
@@ -170,18 +173,42 @@ def _poll_slack_channels(
             "slack_err": None,
         }
 
-    try:
-        auth_info = slack_bot.auth_test()
-    except Exception as exc:  # noqa: BLE001
+    now_mono = time.monotonic()
+    backoff_until = float(cache.get("slack_backoff_until") or 0.0)
+    if now_mono < backoff_until:
         return {
-            "slack_connected": False,
-            "slack_bot_user": None,
+            "slack_connected": bool(bot_user_id or bot_user),
+            "slack_bot_user": bot_user or "sprites_bot",
             "slack_channels": channels,
-            "slack_err": f"Slack auth.test failed: {str(exc)[:180]}",
+            "slack_err": None,
         }
 
-    bot_user = str(auth_info.get("user") or "sprites_bot")
-    bot_user_id = str(auth_info.get("user_id") or "")
+    if not bot_user_id:
+        try:
+            auth_info = slack_bot.auth_test()
+            bot_user = str(auth_info.get("user") or "sprites_bot")
+            bot_user_id = str(auth_info.get("user_id") or "")
+            cache["slack_auth_checked_at"] = now_mono
+            cache["slack_bot_user"] = bot_user
+            cache["slack_bot_user_id"] = bot_user_id
+        except slack_bot.SlackRateLimitError as exc:
+            cache["slack_backoff_until"] = time.monotonic() + exc.retry_after
+            print(f"[blastbox-agent] Slack rate-limited on auth.test; backing off {exc.retry_after}s", flush=True)
+            return {
+                "slack_connected": bool(bot_user),
+                "slack_bot_user": bot_user,
+                "slack_channels": channels,
+                "slack_err": None,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "slack_connected": False,
+                "slack_bot_user": None,
+                "slack_channels": channels,
+                "slack_err": f"Slack auth.test failed: {str(exc)[:180]}",
+            }
+
+    bot_user = bot_user or "sprites_bot"
     slack_err: str | None = None
 
     for channel in channels:
@@ -193,12 +220,26 @@ def _poll_slack_channels(
                 state["slack_last_ts"][channel] = seed_ts
                 _write_json_atomic(state_path, state)
                 print(f"[blastbox-agent] Seeded Slack cursor for {channel} at ts={seed_ts}", flush=True)
+            except slack_bot.SlackRateLimitError as exc:
+                cache["slack_backoff_until"] = time.monotonic() + exc.retry_after
+                print(
+                    f"[blastbox-agent] Slack rate-limited on conversations.history ({channel}); backing off {exc.retry_after}s",
+                    flush=True,
+                )
+                break
             except Exception as exc:  # noqa: BLE001
                 slack_err = f"Slack history {channel}: {str(exc)[:180]}"
             continue
 
         try:
             msgs = slack_bot.fetch_history(channel, oldest=last_ts, limit=25)
+        except slack_bot.SlackRateLimitError as exc:
+            cache["slack_backoff_until"] = time.monotonic() + exc.retry_after
+            print(
+                f"[blastbox-agent] Slack rate-limited on conversations.history ({channel}); backing off {exc.retry_after}s",
+                flush=True,
+            )
+            break
         except Exception as exc:  # noqa: BLE001
             slack_err = f"Slack history {channel}: {str(exc)[:180]}"
             continue
@@ -319,12 +360,14 @@ def run_poll_cycle(
     poll_slack: bool = True,
     cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if cache is None:
+        cache = {}
     state = _load_or_seed_state(state_path, history_path)
     sprite_ok, sprite_err = _check_sprite_cli_ready(detonator_sprite)
 
-    open_prs: list[dict[str, Any]] = list((cache or {}).get("open_prs") or [])
-    gh_err: str | None = (cache or {}).get("gh_err")
-    if poll_prs or cache is None or "open_prs" not in cache:
+    open_prs: list[dict[str, Any]] = list(cache.get("open_prs") or [])
+    gh_err: str | None = cache.get("gh_err")
+    if poll_prs or "open_prs" not in cache:
         open_prs = []
         gh_err = None
         try:
@@ -344,28 +387,47 @@ def run_poll_cycle(
                 )
         except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError) as exc:
             gh_err = str(exc)[:240]
-        if cache is not None:
-            cache["open_prs"] = list(open_prs)
-            cache["gh_err"] = gh_err
+        cache["open_prs"] = list(open_prs)
+        cache["gh_err"] = gh_err
 
-    slack_meta: dict[str, Any] = dict((cache or {}).get("slack_meta") or {})
+    now_mono = time.monotonic()
+    auth_checked_at = float(cache.get("slack_auth_checked_at") or 0.0)
+    backoff_until = float(cache.get("slack_backoff_until") or 0.0)
+    slack_meta: dict[str, Any] = dict(cache.get("slack_meta") or {})
     if poll_slack and config.SLACK_CHANNELS:
-        try:
-            auth_info = slack_bot.auth_test()
-            slack_meta = {
-                "slack_connected": True,
-                "slack_bot_user": str(auth_info.get("user") or "sprites_bot"),
-                "slack_channels": list(config.SLACK_CHANNELS),
-                "slack_err": slack_meta.get("slack_err"),
-            }
-        except Exception as exc:  # noqa: BLE001
-            slack_meta = {
-                "slack_connected": False,
-                "slack_bot_user": None,
-                "slack_channels": list(config.SLACK_CHANNELS),
-                "slack_err": f"Slack auth.test failed: {str(exc)[:180]}",
-            }
-        if cache is not None:
+        need_auth = (
+            not slack_meta.get("slack_connected")
+            or not cache.get("slack_bot_user_id")
+            or (now_mono - auth_checked_at) >= 900.0
+        )
+        if need_auth and now_mono >= backoff_until:
+            try:
+                auth_info = slack_bot.auth_test()
+                cache["slack_auth_checked_at"] = now_mono
+                cache["slack_bot_user"] = str(auth_info.get("user") or "sprites_bot")
+                cache["slack_bot_user_id"] = str(auth_info.get("user_id") or "")
+                slack_meta = {
+                    "slack_connected": True,
+                    "slack_bot_user": cache["slack_bot_user"],
+                    "slack_channels": list(config.SLACK_CHANNELS),
+                    "slack_err": None,
+                }
+            except slack_bot.SlackRateLimitError as exc:
+                cache["slack_backoff_until"] = now_mono + exc.retry_after
+                print(f"[blastbox-agent] Slack rate-limited on auth.test; backing off {exc.retry_after}s", flush=True)
+                slack_meta = {
+                    "slack_connected": bool(slack_meta.get("slack_connected")),
+                    "slack_bot_user": cache.get("slack_bot_user"),
+                    "slack_channels": list(config.SLACK_CHANNELS),
+                    "slack_err": None,
+                }
+            except Exception as exc:  # noqa: BLE001
+                slack_meta = {
+                    "slack_connected": False,
+                    "slack_bot_user": None,
+                    "slack_channels": list(config.SLACK_CHANNELS),
+                    "slack_err": f"Slack auth.test failed: {str(exc)[:180]}",
+                }
             cache["slack_meta"] = dict(slack_meta)
 
     new_runs: list[str] = []
@@ -458,9 +520,11 @@ def run_poll_cycle(
             no_post=no_post,
             new_runs=new_runs,
             flush_fn=_flush_status,
+            cache=cache,
+            bot_user=cache.get("slack_bot_user"),
+            bot_user_id=cache.get("slack_bot_user_id"),
         )
-        if cache is not None:
-            cache["slack_meta"] = dict(slack_meta)
+        cache["slack_meta"] = dict(slack_meta)
 
     return _flush_status(active_job=None, last_error=run_err)
 

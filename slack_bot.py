@@ -22,6 +22,14 @@ SLACK_LINK_RE = re.compile(r"<(https?://[^|>]+)(?:\|[^>]+)?>")
 PR_URL_RE = re.compile(r"^https?://github\.com/[^/]+/[^/]+/pull/\d+(?:/.*)?$")
 
 
+class SlackRateLimitError(RuntimeError):
+    """Raised when Slack returns HTTP 429 rate limiting with a Retry-After delay."""
+
+    def __init__(self, retry_after: int, message: str) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 def _slack_request(
     method: str,
     api_method: str,
@@ -52,11 +60,23 @@ def _slack_request(
             parsed = json.loads(raw) if raw else {}
     except urllib.error.HTTPError as err:
         raw = err.read().decode("utf-8", errors="replace")
+        if err.code == 429:
+            try:
+                raw_ra = int(str(err.headers.get("Retry-After") or "60").strip())
+            except (TypeError, ValueError):
+                raw_ra = 60
+            retry_after = max(10, min(300, raw_ra))
+            raise SlackRateLimitError(
+                retry_after,
+                f"Slack gateway HTTP 429 on {api_method} (retry after {retry_after}s): {raw[:200]}",
+            ) from err
         raise RuntimeError(f"Slack gateway HTTP {err.code} on {api_method}: {raw[:240]}") from err
 
     if not isinstance(parsed, dict):
         raise RuntimeError(f"Unexpected Slack response on {api_method}: {str(parsed)[:200]}")
     if not parsed.get("ok"):
+        if parsed.get("error") == "ratelimited":
+            raise SlackRateLimitError(60, f"Slack API ratelimited on {api_method}")
         raise RuntimeError(f"Slack API error on {api_method}: {parsed.get('error') or parsed}")
     return parsed
 

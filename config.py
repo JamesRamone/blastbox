@@ -70,7 +70,7 @@ SLACK_CHANNELS = [
     for c in (os.environ.get("BLASTBOX_SLACK_CHANNELS") or "<slack-channel-id>").split(",")
     if c.strip()
 ]
-SLACK_POLL_INTERVAL_SECONDS = max(3, int(os.environ.get("BLASTBOX_SLACK_POLL_INTERVAL", "5")))
+SLACK_POLL_INTERVAL_SECONDS = max(3, int(os.environ.get("BLASTBOX_SLACK_POLL_INTERVAL", "15")))
 
 DEFAULT_REPO = os.environ.get("BLASTBOX_REPO") or "JamesRamone/hacksgiving-blastbox-demo"
 PUBLIC_URL = os.environ.get("BLASTBOX_PUBLIC_URL") or "https://blastbox-3xb.sprites.app"

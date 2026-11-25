@@ -360,8 +360,8 @@ def _render_dossier_html(run: dict[str, Any] | None) -> str:
         )
         gh_proof = f"HTTP {html.escape(gh_status)}" if gh_status is not None else "Published"
     elif gh_status is None:
-        action_html = '<span class="dossier-action-muted">Skipped (--no-post)</span>'
-        gh_proof = "Skipped (--no-post)"
+        action_html = '<span class="dossier-action-muted">Console / Slack audit</span>'
+        gh_proof = ""
     else:
         action_html = f'<span class="dossier-action-muted">HTTP {html.escape(gh_status)}</span>'
         gh_proof = f"HTTP {html.escape(gh_status)}"
@@ -479,7 +479,7 @@ def _render_dossier_html(run: dict[str, Any] | None) -> str:
           </div>
           <div class="proof-item">
             <dt>Controller policy</dt>
-            <dd class="mono">HTTP {html.escape(run['policy_403_status'])} on /user/repos &middot; {gh_proof}</dd>
+            <dd class="mono">HTTP {html.escape(run['policy_403_status'])} on /user/repos{f' &middot; {gh_proof}' if gh_proof else ''}</dd>
           </div>
           <div class="proof-item">
             <dt>Syscalls traced</dt>
@@ -632,33 +632,23 @@ def render_dashboard_html(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Blastbox: Isolated Detonation Audit Console</title>
-  <script>
-    (function () {{
-      try {{
-        var saved = localStorage.getItem("blastbox-theme");
-        if (saved === "hacksgiving" || saved === "lab") {{
-          document.documentElement.setAttribute("data-theme", saved);
-        }}
-      }} catch (e) {{}}
-    }})();
-  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {{
-      --bg: #F1F3F5;
+      --bg: #FAF8F5;
       --surface: #FFFFFF;
-      --surface-subtle: #F7F8FA;
-      --surface-hover: #EDF0F4;
-      --topbar-bg: rgba(255, 255, 255, 0.94);
-      --ink: #10151C;
-      --ink-secondary: #374151;
-      --muted: #526071;
-      --border: #D5DCE4;
-      --border-subtle: #E5E9EF;
-      --accent: #C8281E;
-      --accent-hover: #A61F17;
+      --surface-subtle: #F4F0FA;
+      --surface-hover: #ECE5F6;
+      --topbar-bg: rgba(250, 248, 245, 0.94);
+      --ink: #1E1633;
+      --ink-secondary: #3C3156;
+      --muted: #5A4E75;
+      --border: #DDD4EC;
+      --border-subtle: #EAE3F4;
+      --accent: #6D28D9;
+      --accent-hover: #5B21B6;
       --block-ink: #B42318;
       --block-bg: #FEF2F2;
       --block-border: #F5C2C0;
@@ -674,20 +664,6 @@ def render_dashboard_html(
       --text-body: 0.9375rem;
       --text-sm: 0.8125rem;
       --ease: cubic-bezier(0.22, 1, 0.36, 1);
-    }}
-    html[data-theme="hacksgiving"] {{
-      --bg: #FAF8F5;
-      --surface: #FFFFFF;
-      --surface-subtle: #F4F0FA;
-      --surface-hover: #ECE5F6;
-      --topbar-bg: rgba(250, 248, 245, 0.94);
-      --ink: #1E1633;
-      --ink-secondary: #3C3156;
-      --muted: #5A4E75;
-      --border: #DDD4EC;
-      --border-subtle: #EAE3F4;
-      --accent: #6D28D9;
-      --accent-hover: #5B21B6;
     }}
     *, *::before, *::after {{
       box-sizing: border-box;
@@ -811,38 +787,6 @@ def render_dashboard_html(
     }}
     .nav-status-alert {{
       color: var(--block-ink);
-    }}
-    .theme-switch {{
-      display: inline-flex;
-      border: 1px solid var(--border);
-      background: var(--surface);
-      flex-shrink: 0;
-    }}
-    .theme-btn {{
-      appearance: none;
-      border: none;
-      border-right: 1px solid var(--border);
-      background: transparent;
-      color: var(--ink-secondary);
-      font-family: var(--font-sans);
-      font-size: var(--text-sm);
-      font-weight: 500;
-      padding: 0.32rem 0.65rem;
-      min-height: 30px;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background-color 150ms var(--ease), color 150ms var(--ease);
-    }}
-    .theme-btn:last-child {{
-      border-right: none;
-    }}
-    .theme-btn:hover {{
-      background: var(--surface-hover);
-      color: var(--ink);
-    }}
-    .theme-btn[aria-pressed="true"] {{
-      background: var(--ink);
-      color: var(--surface);
     }}
 
     /* Main container */
@@ -978,7 +922,7 @@ def render_dashboard_html(
       background: var(--ink);
       color: var(--surface);
     }}
-    .control-select, .control-search {{
+    .control-select {{
       font-family: var(--font-sans);
       font-size: var(--text-sm);
       color: var(--ink);
@@ -989,15 +933,8 @@ def render_dashboard_html(
       min-height: 36px;
       transition: border-color 150ms var(--ease);
     }}
-    .control-select:hover, .control-search:hover {{
+    .control-select:hover {{
       border-color: var(--muted);
-    }}
-    .control-search {{
-      width: 240px;
-      max-width: 100%;
-    }}
-    .control-search::placeholder {{
-      color: var(--muted);
     }}
 
     /* Master-detail workbench */
@@ -1406,42 +1343,6 @@ def render_dashboard_html(
       font-size: var(--text-body);
       color: var(--ink-secondary);
     }}
-    .pipeline-track {{
-      list-style: none;
-      margin: 0 0 1.25rem;
-      padding: 0;
-      display: grid;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      background: var(--surface);
-      border: 1px solid var(--border);
-    }}
-    .pipeline-step {{
-      padding: 1.05rem 1.1rem;
-      border-right: 1px solid var(--border-subtle);
-      min-width: 0;
-    }}
-    .pipeline-step:last-child {{
-      border-right: none;
-    }}
-    .step-index {{
-      font-family: var(--font-mono);
-      font-size: var(--text-sm);
-      font-weight: 600;
-      color: var(--accent);
-      margin-bottom: 0.35rem;
-    }}
-    .step-title {{
-      font-size: var(--text-body);
-      font-weight: 600;
-      color: var(--ink);
-      margin: 0 0 0.35rem;
-    }}
-    .step-desc {{
-      margin: 0;
-      font-size: var(--text-sm);
-      color: var(--muted);
-      line-height: 1.5;
-    }}
 
     .arch-figure {{
       margin: 0 0 1.25rem;
@@ -1481,6 +1382,11 @@ def render_dashboard_html(
       color: var(--ink-secondary);
       line-height: 1.55;
     }}
+    .arch-steps-note {{
+      margin: 0;
+      font-size: var(--text-sm);
+      color: var(--muted);
+    }}
     .arch-slack-list {{
       margin: 0.25rem 0 0;
       padding-left: 1.15rem;
@@ -1491,34 +1397,17 @@ def render_dashboard_html(
       gap: 0.35rem;
     }}
 
-    .arch-details {{
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+    .boundary-card {{
       background: var(--surface);
       border: 1px solid var(--border);
-    }}
-    .arch-col {{
       padding: 1.25rem 1.4rem;
-      border-right: 1px solid var(--border-subtle);
-      min-width: 0;
+      overflow-x: auto;
     }}
-    .arch-col:last-child {{
-      border-right: none;
-    }}
-    .arch-col h3 {{
-      margin: 0 0 0.7rem;
+    .boundary-card h3 {{
+      margin: 0 0 0.75rem;
       font-size: var(--text-body);
       font-weight: 600;
       color: var(--ink);
-    }}
-    .arch-col p {{
-      margin: 0 0 0.75rem;
-      max-width: 62ch;
-      font-size: var(--text-body);
-      color: var(--ink-secondary);
-    }}
-    .arch-col p:last-child {{
-      margin-bottom: 0;
     }}
     .boundary-table {{
       width: 100%;
@@ -1580,15 +1469,6 @@ def render_dashboard_html(
       .kpi-cell:nth-child(1), .kpi-cell:nth-child(2) {{
         border-bottom: 1px solid var(--border-subtle);
       }}
-      .pipeline-track {{
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }}
-      .pipeline-step {{
-        border-bottom: 1px solid var(--border-subtle);
-      }}
-      .pipeline-step:nth-child(2n) {{
-        border-right: none;
-      }}
     }}
     @media (max-width: 960px) {{
       .workbench {{
@@ -1599,19 +1479,12 @@ def render_dashboard_html(
         border-bottom: 1px solid var(--border);
         max-height: 380px;
       }}
-      .arch-details, .arch-figure {{
+      .arch-figure {{
         grid-template-columns: minmax(0, 1fr);
       }}
       .arch-figure-media {{
         border-right: none;
         border-bottom: 1px solid var(--border-subtle);
-      }}
-      .arch-col {{
-        border-right: none;
-        border-bottom: 1px solid var(--border-subtle);
-      }}
-      .arch-col:last-child {{
-        border-bottom: none;
       }}
     }}
     @media (max-width: 720px) {{
@@ -1662,18 +1535,12 @@ def render_dashboard_html(
         text-align: center;
         padding: 0.5rem 0.45rem;
       }}
-      .control-select, .control-search {{
+      .control-select {{
         flex: 1 1 140px;
         width: auto;
       }}
-      .proof-grid, .triage-grid, .signal-grid, .pipeline-track {{
+      .proof-grid, .triage-grid, .signal-grid {{
         grid-template-columns: minmax(0, 1fr);
-      }}
-      .pipeline-step {{
-        border-right: none;
-      }}
-      .pipeline-step:last-child {{
-        border-bottom: none;
       }}
       .dossier-band {{
         padding: 1rem 1rem;
@@ -1715,10 +1582,6 @@ def render_dashboard_html(
         <a class="nav-jump" href="#architecture">Architecture</a>
         <a href="/api/runs">JSON API</a>
         <a href="/health">Health</a>
-        <div class="theme-switch" role="group" aria-label="Theme mode">
-          <button type="button" class="theme-btn" data-theme-set="lab" aria-pressed="true">Lab</button>
-          <button type="button" class="theme-btn" data-theme-set="hacksgiving" aria-pressed="false">Hacksgiving</button>
-        </div>
         <span class="nav-status {secret_status_cls}">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5"/>
@@ -1740,19 +1603,19 @@ def render_dashboard_html(
       </div>
       <div class="kpi-strip" role="region" aria-label="Isolation and detonation summary">
         <div class="kpi-cell">
-          <div class="kpi-label">Recorded detonations</div>
+          <div class="kpi-label">Audited runs</div>
           <div class="kpi-value">{total_runs}</div>
-          <div class="kpi-note">{pr_count} PR, {mcp_count} MCP, {skill_count} SKILL.md, {blocked_count} blocked, {passed_count} passed</div>
+          <div class="kpi-note">{blocked_count} blocked, {passed_count} passed across PR, MCP, SKILL.md</div>
         </div>
         <div class="kpi-cell">
-          <div class="kpi-label">Detonator isolation</div>
+          <div class="kpi-label">Detonator sandbox</div>
           <div class="kpi-value kpi-ok">Air-gapped</div>
           <div class="kpi-note">{agent_note}</div>
         </div>
         <div class="kpi-cell">
-          <div class="kpi-label">Controller policy</div>
-          <div class="kpi-value">403 / 201</div>
-          <div class="kpi-note">3 zero-secret Connectors, /user/repos denied</div>
+          <div class="kpi-label">Zero-secret Connectors</div>
+          <div class="kpi-value">3 active</div>
+          <div class="kpi-note">GitHub, OpenRouter, Slack (0 raw tokens)</div>
         </div>
         <div class="kpi-cell">
           <div class="kpi-label">Overlay rollback</div>
@@ -1781,7 +1644,6 @@ def render_dashboard_html(
             <option value="REVIEW">Review</option>
             <option value="PASS">Pass</option>
           </select>
-          <input id="run-search" class="control-search" type="search" aria-label="Search runs" placeholder="Search target, run ID, or checkpoint">
         </div>
       </div>
 
@@ -1813,36 +1675,8 @@ def render_dashboard_html(
     <section id="architecture" class="arch-section">
       <h2>Two-Sprite air-gapped rollback architecture</h2>
       <p class="arch-intro">
-        Untrusted code never shares a VM with Sprites Connectors or the public dashboard. Detonation executes inside an unlabeled, deny-all egress Sprite, while an autonomous controller Sprite plans probes, rewinds the overlay, scores kernel syscalls, and publishes reports.
+        Untrusted code never shares a VM with Sprites Connectors or the public dashboard. Detonation executes inside an unlabeled, deny-all egress Sprite under strace, then rewinds cleanly via <code>sprite restore</code>.
       </p>
-
-      <ol class="pipeline-track">
-        <li class="pipeline-step">
-          <div class="step-index">Step 1</div>
-          <h3 class="step-title">Air-gap preflight</h3>
-          <p class="step-desc">Verify <code>{detonator_name}</code> holds 0 secrets, 0 labels, and active <code class="nowrap">* -&gt; deny</code> network policy, then snapshot baseline FS and checkpoint.</p>
-        </li>
-        <li class="pipeline-step">
-          <div class="step-index">Step 2</div>
-          <h3 class="step-title">LLM probe planning</h3>
-          <p class="step-desc">Controller Sprite inspects PR tree or MCP <code>tools/list</code> via OpenRouter Connector and plans targeted tool calls and stages.</p>
-        </li>
-        <li class="pipeline-step">
-          <div class="step-index">Step 3</div>
-          <h3 class="step-title">Strace detonation</h3>
-          <p class="step-desc">Run planned install, tests, or MCP calls inside <code>{detonator_name}</code> under expanded <code>strace -f</code> and capture pre/post FS diff.</p>
-        </li>
-        <li class="pipeline-step">
-          <div class="step-index">Step 4</div>
-          <h3 class="step-title">Overlay rewind</h3>
-          <p class="step-desc">Pull traces, execute <code>sprite restore</code> on <code>{detonator_name}</code>, verify 0 remaining <code>/home/sprite</code> diffs, and sweep <code>/tmp</code>.</p>
-        </li>
-        <li class="pipeline-step">
-          <div class="step-index">Step 5</div>
-          <h3 class="step-title">Deterministic triage</h3>
-          <p class="step-desc">Score syscalls, DNS, FS diffs, and prompt injection deterministically, then publish GitHub, Slack, and dashboard verdicts.</p>
-        </li>
-      </ol>
 
       <figure class="arch-figure">
         <div class="arch-figure-media">
@@ -1853,6 +1687,9 @@ def render_dashboard_html(
           <p>
             The controller Sprite watches GitHub PRs and Slack <code>#blastbox</code>, detonates untrusted payloads behind an armored deny-all network wall on <code>{detonator_name}</code>, and rewinds the overlay checkpoint back to clean steel.
           </p>
+          <p class="arch-steps-note">
+            1. Preflight &amp; checkpoint &middot; 2. Plan &amp; strace detonation &middot; 3. Overlay rewind &amp; zero-secret triage
+          </p>
           <ul class="arch-slack-list">
             <li><code class="nowrap">@blastbox boom poisoned-skill</code></li>
             <li><code class="nowrap">@blastbox boom clean-skill</code></li>
@@ -1861,40 +1698,29 @@ def render_dashboard_html(
         </figcaption>
       </figure>
 
-      <div class="arch-details">
-        <div class="arch-col">
-          <h3>Two-Sprite security boundary</h3>
-          <table class="boundary-table">
-            <thead>
-              <tr>
-                <th scope="col">Sprite role</th>
-                <th scope="col">Connectors and network</th>
-                <th scope="col">Trust boundary</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><span class="mono">{sprite_name}</span> (Controller)</td>
-                <td>GitHub + OpenRouter + Slack Bot Connectors (<code>HTTP 403</code> on <code>/user/repos</code>)</td>
-                <td>Never executes untrusted PR, MCP, or SKILL.md code</td>
-              </tr>
-              <tr>
-                <td><span class="mono">{detonator_name}</span> (Detonator)</td>
-                <td>Zero labels (Connectors denied), <code class="nowrap">* -&gt; deny</code> egress</td>
-                <td>Runs untrusted code; rewound via <code class="nowrap">sprite restore</code></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div class="arch-col">
-          <h3>Generic filesystem diff and checkpoint persistence</h3>
-          <p>
-            Instead of looking for a single hardcoded marker file, Blastbox hashes and snapshots <code>/home/sprite</code> and <code>/tmp</code> before detonation, after detonation, and after <code>sprite restore</code>.
-          </p>
-          <p>
-            Every file created outside the workspace is flagged in telemetry and verified absent after overlay rewind, while sanitized history lives safely on the separate Controller Sprite.
-          </p>
-        </div>
+      <div class="boundary-card">
+        <h3>Two-Sprite security boundary</h3>
+        <table class="boundary-table">
+          <thead>
+            <tr>
+              <th scope="col">Sprite role</th>
+              <th scope="col">Connectors and network</th>
+              <th scope="col">Trust boundary</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><span class="mono">{sprite_name}</span> (Controller)</td>
+              <td>GitHub + OpenRouter + Slack Bot Connectors (<code>HTTP 403</code> on <code>/user/repos</code>)</td>
+              <td>Never executes untrusted PR, MCP, or SKILL.md code</td>
+            </tr>
+            <tr>
+              <td><span class="mono">{detonator_name}</span> (Detonator)</td>
+              <td>Zero labels (Connectors denied), <code class="nowrap">* -&gt; deny</code> egress</td>
+              <td>Runs untrusted code; rewound via <code class="nowrap">sprite restore</code> and generic FS diff</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
     </section>
 
@@ -1918,7 +1744,6 @@ def render_dashboard_html(
       var ledgerEmpty = document.getElementById("ledger-empty");
       var dossierPane = document.getElementById("dossier-pane");
       var verdictSelect = document.getElementById("verdict-filter");
-      var searchInput = document.getElementById("run-search");
       var kindTabs = Array.prototype.slice.call(document.querySelectorAll("[data-kind-filter]"));
       if (!dataEl || !ledgerBody || !dossierPane) return;
 
@@ -1940,8 +1765,8 @@ def render_dashboard_html(
         ["dns_queries", "DNS queries"],
         ["notable_subprocesses", "Notable subprocesses"],
         ["connector_policy_denials", "Connector / gateway blocks"],
-        ["prompt_injection_signals", "README prompt injection"],
-        ["mcp_tool_poisoning", "MCP metadata poisoning"]
+        ["prompt_injection_signals", "Doc / prompt injection"],
+        ["mcp_tool_poisoning", "MCP / SKILL poisoning"]
       ];
 
       function escapeHtml(val) {{
@@ -1978,7 +1803,7 @@ def render_dashboard_html(
           dossierPane.innerHTML =
             '<div class="dossier-empty">' +
             '<h3>No matching detonation run</h3>' +
-            '<p>Adjust the kind tabs, verdict selector, or search query to inspect a recorded run.</p>' +
+            '<p>Adjust the kind tabs or verdict selector to inspect a recorded run.</p>' +
             '</div>';
           return;
         }}
@@ -1995,8 +1820,8 @@ def render_dashboard_html(
           actionHtml = '<a class="primary-action" href="' + escapeHtml(run.github_artifact_url) + '" target="_blank" rel="noopener">Open GitHub report</a>';
           ghProof = run.github_publish_status != null ? "HTTP " + escapeHtml(run.github_publish_status) : "Published";
         }} else if (run.github_publish_status == null) {{
-          actionHtml = '<span class="dossier-action-muted">Skipped (--no-post)</span>';
-          ghProof = "Skipped (--no-post)";
+          actionHtml = '<span class="dossier-action-muted">Console / Slack audit</span>';
+          ghProof = "";
         }} else {{
           actionHtml = '<span class="dossier-action-muted">HTTP ' + escapeHtml(run.github_publish_status) + '</span>';
           ghProof = "HTTP " + escapeHtml(run.github_publish_status);
@@ -2098,7 +1923,7 @@ def render_dashboard_html(
               '<div class="proof-item"><dt>Detonator sandbox</dt><dd class="mono">' + escapeHtml(run.detonator_isolation) + '</dd></div>' +
               '<div class="proof-item"><dt>Filesystem rollback</dt><dd><span class="mono">' + escapeHtml(run.checkpoint_restored) + '</span> &middot; <span class="' + rollbackCls + '">' + escapeHtml(rollbackNote) + '</span></dd></div>' +
               '<div class="proof-item"><dt>Zero-secret VM</dt><dd class="' + zeroCls + '">' + zeroNote + '</dd></div>' +
-              '<div class="proof-item"><dt>Controller policy</dt><dd class="mono">HTTP ' + escapeHtml(run.policy_403_status) + ' on /user/repos &middot; ' + ghProof + '</dd></div>' +
+              '<div class="proof-item"><dt>Controller policy</dt><dd class="mono">HTTP ' + escapeHtml(run.policy_403_status) + ' on /user/repos' + (ghProof ? ' &middot; ' + ghProof : '') + '</dd></div>' +
               '<div class="proof-item"><dt>Syscalls traced</dt><dd class="mono">' + escapeHtml(syscalls) + '</dd></div>' +
             '</dl>' +
           '</div>' +
@@ -2146,16 +1971,13 @@ def render_dashboard_html(
 
       function applyFilters() {{
         var verdictVal = verdictSelect ? verdictSelect.value : "all";
-        var query = searchInput ? searchInput.value.trim().toLowerCase() : "";
         var rows = getAllRows();
         var visibleRows = [];
         for (var i = 0; i < rows.length; i++) {{
           var row = rows[i];
           var kindOk = activeKind === "all" || row.getAttribute("data-kind") === activeKind;
           var verdictOk = verdictVal === "all" || row.getAttribute("data-verdict") === verdictVal;
-          var searchText = row.getAttribute("data-search") || "";
-          var searchOk = !query || searchText.indexOf(query) !== -1;
-          var show = kindOk && verdictOk && searchOk;
+          var show = kindOk && verdictOk;
           row.hidden = !show;
           if (show) visibleRows.push(row);
         }}
@@ -2209,30 +2031,6 @@ def render_dashboard_html(
       }});
 
       if (verdictSelect) verdictSelect.addEventListener("change", applyFilters);
-      if (searchInput) searchInput.addEventListener("input", applyFilters);
-
-      var themeButtons = Array.prototype.slice.call(document.querySelectorAll("[data-theme-set]"));
-      function applyTheme(mode) {{
-        var next = mode === "hacksgiving" ? "hacksgiving" : "lab";
-        if (next === "hacksgiving") {{
-          document.documentElement.setAttribute("data-theme", "hacksgiving");
-        }} else {{
-          document.documentElement.setAttribute("data-theme", "lab");
-        }}
-        themeButtons.forEach(function (btn) {{
-          btn.setAttribute("aria-pressed", btn.getAttribute("data-theme-set") === next ? "true" : "false");
-        }});
-        try {{
-          localStorage.setItem("blastbox-theme", next);
-        }} catch (e) {{}}
-      }}
-      var initialTheme = document.documentElement.getAttribute("data-theme") || "lab";
-      applyTheme(initialTheme);
-      themeButtons.forEach(function (btn) {{
-        btn.addEventListener("click", function () {{
-          applyTheme(btn.getAttribute("data-theme-set"));
-        }});
-      }});
     }})();
   </script>
 </body>
