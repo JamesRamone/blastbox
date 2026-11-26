@@ -7,7 +7,7 @@
 [![Zero-Secret Connectors](https://img.shields.io/badge/Connectors-Zero--Secret-0F6B46?style=flat)](#why-sprites--connectors-matter)
 [![Live Console](https://img.shields.io/badge/Live%20Console-blastbox--3xb.sprites.app-4B5563?style=flat)](https://blastbox-3xb.sprites.app)
 
-**Blastbox is my personal security agent.** Before I install an MCP server or an agent skill, or merge a pull request, I type `@blastbox boom <target>` in Slack. Blastbox runs the target in a throwaway Fly.io Sprite with no network and no credentials, records every file, network, and process syscall with `strace`, rewinds the VM, and about two minutes later replies with `BLOCK`, `REVIEW`, or `PASS` and the evidence. It also watches my repo and audits every new PR commit on its own.
+**Blastbox is a detonation chamber for things you give your AI agent.** Before I install an MCP server or an agent `SKILL.md` (or merge an untrusted PR), I type `@blastbox boom <target>` in Slack. Blastbox runs the target in a throwaway Fly.io Sprite with no network and no credentials, records file/network/process syscalls with `strace` plus pre/post filesystem hashes and static prompt-injection checks, rewinds the VM, and 2–4 minutes later (mostly checkpoint restore) replies with `BLOCK`, `REVIEW`, or `PASS` (`PASS` means no suspicious behavior was observed in that probe, not a guarantee of safety; the LLM summarizes evidence and cannot override the deterministic verdict). It also watches my repo and audits new PR commits automatically.
 
 ![Blastbox Live Audit Walkthrough](docs/demo.gif)
 
