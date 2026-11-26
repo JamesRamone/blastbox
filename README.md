@@ -1,3 +1,5 @@
+![Blastbox Hacksgiving Two-Sprite Detonation Oven](docs/hacksgiving-turkey.png)
+
 # Blastbox
 
 [![Runs on Fly.io](https://img.shields.io/badge/Runs%20on-Fly.io-1F2937?style=flat&logo=flydotio&logoColor=white)](https://fly.io)
