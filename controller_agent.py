@@ -31,6 +31,7 @@ import config  # noqa: E402
 import slack_bot  # noqa: E402
 
 PR_NUM_RE = re.compile(r"/pull/(\d+)(?:$|[/?#])")
+MAX_PR_ATTEMPTS = 2
 
 
 def _now_utc() -> str:
@@ -560,6 +561,13 @@ def run_poll_cycle(
             except Exception as exc:  # noqa: BLE001
                 run_err = str(exc)[:280]
                 print(f"[blastbox-agent] Audit error on PR #{pr_num}: {run_err}", flush=True)
+                # Cap retries: a failure after the GitHub comment posted would otherwise
+                # re-detonate and re-comment on every poll.
+                failures = state.setdefault("pr_failures", {})
+                failures[key] = int(failures.get(key) or 0) + 1
+                if failures[key] >= MAX_PR_ATTEMPTS:
+                    state["audited"][key] = f"error:{run_err[:80]}"
+                _write_json_atomic(state_path, state)
     elif poll_prs and not sprite_ok:
         print(
             f"[blastbox-agent] Sprite CLI auth pending on controller '{controller_sprite}': {sprite_err}",

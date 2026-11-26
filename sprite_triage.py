@@ -538,13 +538,38 @@ def main() -> int:
     if not policy_403["blocked_as_expected"]:
         raise RuntimeError(f"Expected HTTP 403 on blocked /user/repos route, got {policy_403['http_status']}")
 
-    llm_result = call_openrouter_triage(
-        iocs,
-        readme_excerpt,
-        preferred_model=args.model,
-        mcp_tools_list=mcp_tools_list,
-        agent_plan=agent_plan,
-    )
+    try:
+        llm_result = call_openrouter_triage(
+            iocs,
+            readme_excerpt,
+            preferred_model=args.model,
+            mcp_tools_list=mcp_tools_list,
+            agent_plan=agent_plan,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # The published verdict is the deterministic strace score, so an LLM outage
+        # must not block the report; publish it without the AI section's opinion.
+        counts = iocs.get("counts") or {}
+        llm_result = {
+            "ok": False,
+            "provider": config.LLM_PROVIDER,
+            "model_used": "deterministic-fallback (AI triage unavailable)",
+            "requested_model": args.model,
+            "usage": {},
+            "triage": {
+                "recommended_verdict": "N/A",
+                "executive_summary": (
+                    "AI triage was unavailable for this run; the verdict is the deterministic "
+                    "strace + filesystem diff score."
+                ),
+            },
+            "raw_content": "",
+            "prompt_injection_detected": bool(
+                counts.get("prompt_injection_signals") or counts.get("mcp_tool_poisoning")
+            ),
+            "prompt_injection_resisted": True,
+            "fallback_errors": [str(exc)[:400]],
+        }
     report_md = render_markdown_report(
         iocs,
         zero_secrets,

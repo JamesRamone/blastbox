@@ -149,20 +149,17 @@ def parse_boom_command(text: str, bot_user_id: str | None = None) -> dict[str, s
         return None
     cleaned = _strip_slack_links(text).strip()
 
-    mention_prefixes = [r"!boom"]
-    if bot_user_id:
-        mention_prefixes.append(rf"<@{re.escape(bot_user_id)}>")
-    mention_prefixes.extend([r"<@[A-Z0-9]+>", r"@(?:blastbox|sprites_bot)"])
+    # Only a mention of this bot counts; accept any `<@U…>` only before auth.test has
+    # told us the bot's own user ID.
+    bot_mention = rf"<@{re.escape(bot_user_id)}>" if bot_user_id else r"<@[A-Z0-9]+>"
+    mention_prefixes = [r"!boom", bot_mention, r"@(?:blastbox|sprites_bot)"]
     mention_group = "(?:" + "|".join(mention_prefixes) + ")"
 
     help_re = re.compile(rf"^{mention_group}[\s,:]+help(?:\s|$)|^!boom[\s,:]+help(?:\s|$)", re.IGNORECASE)
     if help_re.match(cleaned):
         return {"action": "help", "target": "", "raw_text": text}
 
-    boom_prefixes = [r"!boom"]
-    if bot_user_id:
-        boom_prefixes.append(rf"<@{re.escape(bot_user_id)}>[\s,:]+boom")
-    boom_prefixes.extend([r"<@[A-Z0-9]+>[\s,:]+boom", r"@(?:blastbox|sprites_bot)[\s,:]+boom"])
+    boom_prefixes = [r"!boom", rf"{bot_mention}[\s,:]+boom", r"@(?:blastbox|sprites_bot)[\s,:]+boom"]
 
     pattern = re.compile(r"^(?:" + "|".join(boom_prefixes) + r")\s+(\S+)", re.IGNORECASE)
     m = pattern.match(cleaned)

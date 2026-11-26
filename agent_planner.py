@@ -324,13 +324,14 @@ def plan_pr_detonation(
         if isinstance(llm_plan.get("risk_hypotheses"), list):
             risk_hypotheses = [str(h) for h in llm_plan["risk_hypotheses"][:3]]
 
-    # Guarantee baseline install/test execution for Python packages
+    # Guarantee baseline install/test/import execution: the LLM reads the untrusted
+    # README, so it may add stages but never remove the ones that execute the code.
     if has_setup and "pip_install" not in stages:
         stages.insert(0, "pip_install")
     if has_tests and "unittest" not in stages and "pytest" not in stages:
         stages.append("unittest")
-    if not stages:
-        stages = ["import_check"]
+    if "import_check" not in stages:
+        stages.append("import_check")
 
     if not focus_files:
         focus_files = [

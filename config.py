@@ -195,7 +195,6 @@ def call_llm_connector(
     Returns `(ok, content, model_used, usage, provider, errors)`.
     """
     import json
-    import urllib.error
     import urllib.request
 
     provider, _cid, gateway, default_models = resolve_llm_connector()
@@ -251,7 +250,7 @@ def call_llm_connector(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
-        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
+        except Exception as exc:  # noqa: BLE001 - connection resets etc. must fall through to the next model
             errors.append(f"{provider}/{model}: {str(exc)[:180]}")
             continue
 

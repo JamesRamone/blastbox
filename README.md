@@ -7,7 +7,7 @@
 [![Zero-Secret Connectors](https://img.shields.io/badge/Connectors-Zero--Secret-0F6B46?style=flat)](#why-sprites--connectors-matter)
 [![Live Console](https://img.shields.io/badge/Live%20Console-blastbox--3xb.sprites.app-4B5563?style=flat)](https://blastbox-3xb.sprites.app)
 
-**Blastbox detonates untrusted GitHub PRs, stdio MCP servers, and AI agent `SKILL.md` files inside a deny-all-egress Fly.io Sprite under `strace`, rewinds the microVM to a clean checkpoint, and publishes a forensic security verdict via zero-secret Sprites Connectors.**
+**Blastbox is my personal security agent.** Before I install an MCP server or an agent skill, or merge a pull request, I type `@blastbox boom <target>` in Slack. Blastbox runs the target in a throwaway Fly.io Sprite with no network and no credentials, records every file, network, and process syscall with `strace`, rewinds the VM, and about two minutes later replies with `BLOCK`, `REVIEW`, or `PASS` and the evidence. It also watches my repo and audits every new PR commit on its own.
 
 ![Blastbox Live Audit Walkthrough](docs/demo.gif)
 
@@ -16,14 +16,30 @@
 ## Architecture
 
 ```text
-┌────────────────────────────────────┐       sprite exec / restore        ┌────────────────────────────────────┐        strace + fs_diff         ┌────────────────────────────────────┐
-│  1. Controller + Connectors        │ ─────────────────────────────────▶ │  2. Ephemeral Detonator            │ ──────────────────────────────▶ │  3. Forensic Verdict               │
-│  Sprite: blastbox (labeled)        │                                    │  Sprite: blastbox-detonator        │                                 │  Deterministic + AI Triage         │
-│  • GitHub, OpenRouter & Slack      │                                    │  • 0 credentials, 0 labels         │                                 │  • Risk score (0–100) + BLOCK/PASS │
-│    zero-secret Sprites Connectors  │                                    │  • Outbound policy: * -> deny      │                                 │  • Prompt-injection defense check  │
-│  • Pinned-IP SSRF fetcher          │  ◀───────────────────────────────  │  • strace -f + pre/post FS hashes  │                                 │  • GitHub PR/Issue, Slack & Web UI │
-│  • Never runs untrusted target code│      pulls artifacts + rewind      │  • Restored to golden checkpoint   │                                 │  • https://blastbox-3xb.sprites.app│
-└────────────────────────────────────┘                                    └────────────────────────────────────┘                                 └────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│ 1. Controller Sprite: blastbox (labeled)     │
+│ • GitHub, OpenRouter & Slack Connectors      │
+│ • Watches PRs + Slack, plans probes with LLM │
+│ • Never runs untrusted target code           │
+└──────────────────────────────────────────────┘
+        │ sprite exec            ▲ pulls artifacts,
+        ▼                        │ sprite restore
+┌──────────────────────────────────────────────┐
+│ 2. Detonator Sprite: blastbox-detonator      │
+│ • 0 credentials, 0 labels (Connectors denied)│
+│ • Outbound policy: * -> deny                 │
+│ • strace -f + pre/post filesystem hashes     │
+│ • Restored to golden checkpoint after a run  │
+└──────────────────────────────────────────────┘
+        │ strace + fs_diff
+        ▼
+┌──────────────────────────────────────────────┐
+│ 3. Verdict                                   │
+│ • Deterministic risk score 0–100 decides     │
+│   BLOCK / REVIEW / PASS                      │
+│ • LLM writes the summary, cannot override    │
+│ • GitHub comment, Slack reply, live console  │
+└──────────────────────────────────────────────┘
 ```
 
 ## Why Sprites + Connectors Matter
@@ -31,8 +47,9 @@
 Running untrusted code inside the same VM that holds API keys—or even inside a VM labeled for Sprites Connectors—lets a malicious `setup.py`, MCP tool, or `SKILL.md` code block abuse allowed routes or exfiltrate secrets even when unit tests pass and MCP tools return `isError: false`.
 
 - **Two-Sprite blast radius split:** `blastbox` (controller) holds zero raw third-party API tokens and uses route-scoped **Sprites Connectors** (`github`, `openrouter`, `slack_bot`), but never executes untrusted code. `blastbox-detonator` executes untrusted targets with **zero credentials, zero labels (all Connectors denied), and an external `* -> deny` egress policy**.
-- **Deterministic rewind + FS diff verification:** Every detonation runs against an immutable golden checkpoint (`blastbox-detonator-golden`, currently `v27`). Blastbox hashes `/home/sprite` and `/tmp` (`/var/tmp`, `/dev/shm`) before detonation, after detonation, and after `sprite restore` to catch dropped persistence files and verify `0` remain post-rewind.
-- **Least-privilege Connector enforcement:** On every run, the controller live-probes a denied GitHub Connector route (`/user/repos`) to record `HTTP 403` proof alongside `zero_secrets_in_env: true`, and falls back deterministically if free OpenRouter models rate-limit or time out.
+- **Rewind + FS diff verification:** After every detonation the detonator is restored to its golden checkpoint (`blastbox-detonator-golden`). Blastbox hashes `/home/sprite` and `/tmp` (`/var/tmp`, `/dev/shm`) before detonation, after detonation, and after `sprite restore`, to catch dropped persistence files and confirm none of them remain after the rewind.
+- **The LLM never decides the verdict:** `BLOCK` / `REVIEW` / `PASS` always comes from the deterministic strace + filesystem score. The LLM (through the Connector) plans which tools and stages to exercise and writes the summary. The poisoned fixtures try to talk it into approving, and it can't change the outcome. If the LLM Connector rate-limits or times out, the deterministic report is published without the AI summary.
+- **Least-privilege Connector enforcement:** On every run, the controller live-probes a denied GitHub Connector route (`/user/repos`) to record `HTTP 403` proof alongside `zero_secrets_in_env: true`.
 
 ![Blastbox Live Audit Console](docs/dashboard.png)
 
@@ -84,7 +101,7 @@ Running untrusted code inside the same VM that holds API keys—or even inside a
 | **Poisoned 2-Tool MCP** (`fixtures/poisoned-mcp`) | **`BLOCK`** (`AI: BLOCK`) | `100/100` | `health_check`, `format_release_note` | `2` created (`~/.local/share/notes-mcp/state.bin`, `/tmp/.notes_mcp_cache`) -> `0` left (`1,730` syscalls) | [Issue #9](https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/9), `v27` |
 | **Clean 2-Tool MCP** (`fixtures/clean-mcp`) | **`PASS`** (`AI: PASS`) | `0/100` | `health_check`, `format_release_note` | `0` created (`181` syscalls) -> `0` left | [Issue #10](https://github.com/JamesRamone/hacksgiving-blastbox-demo/issues/10), `v12` |
 
-*Bundled `fixtures/` safely simulate supply-chain behaviors (RFC 5737 sinkhole probes `192.0.2.1:4444`, `.invalid` DNS lookups, SSH key reads, temp file drops, and prompt injections) with no live exploits.*
+*Bundled `fixtures/` safely simulate supply-chain behaviors (RFC 5737 sinkhole probes `192.0.2.1:4444`, `.invalid` DNS lookups, SSH key reads, temp file drops, and prompt injections) with no live exploits. The checkpoint column is the golden checkpoint version restored on that run; it advanced from `v10` to `v27` as the detonator image was refined during the week.*
 
 ---
 
@@ -103,6 +120,7 @@ Running untrusted code inside the same VM that holds API keys—or even inside a
    python3 init_detonator.py   # Creates unlabeled deny-all egress Sprite + golden checkpoint
    python3 init_controller.py  # Creates Controller Sprite, detects URL, starts web + agent
    ```
+   Set `BLASTBOX_ALLOWED_PR_AUTHORS` so only PRs from trusted authors are detonated, whatever the trigger. The agent service holds a Sprites Tasks API heartbeat (`web/agent_run.sh`) so it keeps polling while nobody is visiting the console, which means the controller is billed as active while the agent runs.
 3. **Authenticate `sprite` CLI once inside the controller:**
    ```bash
    sprite console -s blastbox
@@ -113,5 +131,8 @@ Running untrusted code inside the same VM that holds API keys—or even inside a
 ## Known Limitations
 
 - **Controller `sprite login` boundary:** `blastbox` runs `sprite exec` / `sprite restore` against `blastbox-detonator`, so it holds an authenticated `sprite` CLI session. Untrusted targets never execute on `blastbox`, and all detonator outputs (`strace`, transcripts, markdown) are treated as untrusted data.
-- **Userspace `ptrace` tracing:** Uses `strace -f` rather than kernel eBPF; detonations hitting the `20s` timeout (`detonation_timeouts`) automatically score at least `REVIEW` so sleeping payloads cannot earn `PASS`.
-- **`/tmp` outside root overlay:** `/tmp`, `/var/tmp`, and `/dev/shm` sit on `/dev/vdb` outside the Firecracker root snapshot, so Blastbox hashes them pre/post detonation and sweeps newly created files post-restore.
+- **Userspace `ptrace` tracing:** Uses `strace -f` rather than kernel eBPF. A payload that sleeps through the `20s` timeout scores at least `REVIEW`.
+- **Evidence lives inside the detonator:** The target runs as the same user as `strace`, and the trace and filesystem snapshots are produced inside the detonator VM. A payload written specifically to evade Blastbox could detect the tracer, kill it, or tamper with its own evidence. A hardened version would run the target as a separate unprivileged user and stream the trace out of the VM.
+- **`/tmp` outside root overlay:** `/tmp`, `/var/tmp`, and `/dev/shm` sit on `/dev/vdb` outside the Firecracker root snapshot, so Blastbox hashes them pre/post detonation and sweeps newly created files post-restore. Pre-existing `/tmp` files that a payload modifies are not swept.
+- **Python only:** PR mode runs Python packages (`setup.py` / `pyproject.toml`, tests, imports), and MCP mode runs Python stdio servers. Node and `uvx` servers are not supported yet.
+- **Heuristic prompt-injection detection:** README / SKILL.md / MCP metadata injection is flagged with pattern rules, so rephrased injections can go unflagged. This only affects the report: the verdict comes from observed behavior.

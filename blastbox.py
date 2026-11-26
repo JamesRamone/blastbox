@@ -512,6 +512,10 @@ OUT_BUNDLE.write_text(json.dumps(bundle), encoding="utf-8")
             os.chmod(target, 0o755)
 
     meta = bundle["meta"]
+    # Applies to every trigger (PR watcher, Slack, CLI), not just the PR watcher.
+    author = str(meta.get("author") or "").strip().lower()
+    if config.ALLOWED_PR_AUTHORS and author not in config.ALLOWED_PR_AUTHORS:
+        raise ValueError(f"PR author '{author or 'unknown'}' is not in BLASTBOX_ALLOWED_PR_AUTHORS; refusing to detonate.")
     (run_dir / "pr_meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     return meta, staged_dir
 
@@ -764,7 +768,7 @@ def stage_and_plan_target(
             "cd /home/sprite/detonation && "
             f"timeout 10s strace -f -s 256 -e trace={TRACE_EVENTS} -o /tmp/.blastbox_run/discover.strace "
             "/.sprite/bin/python3 /home/sprite/detonation/.blastbox_mcp_probe.py "
-            "--work-dir /home/sprite/detonation --discover-only --catalog /tmp/.blastbox_run/mcp_catalog.json; "
+            "--work-dir /home/sprite/detonation --discover-only --catalog /home/sprite/detonation/.blastbox_mcp_catalog.json; "
             "RC=$?; "
             f"if [ -f /tmp/.blastbox_run/discover.strace ] && [ $(stat -c%s /tmp/.blastbox_run/discover.strace) -gt {MAX_STRACE_PULL_BYTES} ]; then "
             f"truncate -s {MAX_STRACE_PULL_BYTES} /tmp/.blastbox_run/discover.strace; fi; "
@@ -772,7 +776,7 @@ def stage_and_plan_target(
         )
         sprite_exec(detonator_sprite, ["bash", "-c", discover_cmd], check=True)
         catalog_local = run_dir / "mcp_catalog.json"
-        sprite_pull(detonator_sprite, "/tmp/.blastbox_run/mcp_catalog.json", catalog_local, check=True)
+        sprite_pull(detonator_sprite, "/home/sprite/detonation/.blastbox_mcp_catalog.json", catalog_local, check=True)
         catalog = json.loads(catalog_local.read_text(encoding="utf-8"))
 
         # Phase B: LLM Agent plans tool calls & arguments inside clean controller
@@ -853,6 +857,14 @@ def run_strace_detonation(
         stages = [s for s in (agent_plan.get("stages") or []) if s in ("pip_install", "unittest", "pytest", "import_check")]
         if not stages:
             stages = ["pip_install", "unittest"]
+        if "import_check" not in stages:
+            stages.append("import_check")
+        # Test discovery starts in tests/ when present, else at the repo root, so test
+        # files outside tests/ still execute.
+        unittest_cmd = (
+            '      PYTHONPATH=/home/sprite/detonation/.pkg_install "\'"$REAL_PYTHON"\'" -m unittest discover '
+            '-s "$(if [ -d tests ]; then echo tests; else echo .; fi)" -v'
+        )
         log("4/9", f"Detonating PR/package stages {stages} inside air-gapped '{detonator_sprite}' under strace ({timeout_s}s timeout)...")
         stage_cmds = ['    cd /home/sprite/detonation']
         if "pip_install" in stages:
@@ -867,21 +879,19 @@ def run_strace_detonation(
         if "unittest" in stages:
             stage_cmds.extend(
                 [
-                    '    if [ -d tests ]; then',
-                    '      echo "=== [blastbox] unittest discover ==="',
-                    '      PYTHONPATH=/home/sprite/detonation/.pkg_install "\'"$REAL_PYTHON"\'" -m unittest discover -s tests -v',
-                    '    fi',
+                    '    echo "=== [blastbox] unittest discover ==="',
+                    unittest_cmd,
                 ]
             )
         if "pytest" in stages and "unittest" not in stages:
             stage_cmds.extend(
                 [
-                    '    if [ -d tests ] && "\'"$REAL_PYTHON"\'" -m pytest --version >/dev/null 2>&1; then',
+                    '    if "\'"$REAL_PYTHON"\'" -m pytest --version >/dev/null 2>&1; then',
                     '      echo "=== [blastbox] pytest ==="',
                     '      PYTHONPATH=/home/sprite/detonation/.pkg_install "\'"$REAL_PYTHON"\'" -m pytest -q',
-                    '    elif [ -d tests ]; then',
+                    '    else',
                     '      echo "=== [blastbox] unittest discover ==="',
-                    '      PYTHONPATH=/home/sprite/detonation/.pkg_install "\'"$REAL_PYTHON"\'" -m unittest discover -s tests -v',
+                    unittest_cmd,
                     '    fi',
                 ]
             )
@@ -932,7 +942,7 @@ if orig_strace_bytes > max_strace:
         head = fh.read(head_len)
         fh.seek(max(0, orig_strace_bytes - tail_len))
         tail = fh.read(tail_len)
-    marker = f"\n# [blastbox] strace truncated from {{orig_strace_bytes}} to {{max_strace}} bytes\n".encode("utf-8")
+    marker = f"\\n# [blastbox] strace truncated from {{orig_strace_bytes}} to {{max_strace}} bytes\\n".encode("utf-8")
     strace_file.write_bytes(head + marker + tail)
     strace_truncated = True
 
@@ -941,7 +951,7 @@ for name in ("command.stdout", "command.stderr"):
     if p.exists() and p.stat().st_size > max_stdio:
         with p.open("rb") as fh:
             data = fh.read(max_stdio)
-        p.write_bytes(data + b"\n[blastbox] output truncated\n")
+        p.write_bytes(data + b"\\n[blastbox] output truncated\\n")
 
 meta = {{
     "mode": {mode!r},
@@ -983,7 +993,9 @@ def pull_forensic_artifacts(detonator_sprite: str, run_dir: Path, *, mode: str) 
         if sprite_pull(detonator_sprite, "/tmp/.blastbox_run/discover.strace", discover_strace, check=False):
             main_trace = (run_dir / "blastbox.strace").read_text(encoding="utf-8", errors="replace")
             disc_trace = discover_strace.read_text(encoding="utf-8", errors="replace")
-            (run_dir / "blastbox.strace").write_text(f"{disc_trace}\n{main_trace}", encoding="utf-8")
+            # Main trace first: its first PID is the harness `bash -c` wrapper that
+            # extract_iocs excludes as the trace root.
+            (run_dir / "blastbox.strace").write_text(f"{main_trace}\n{disc_trace}", encoding="utf-8")
     sprite_pull(detonator_sprite, "/tmp/.blastbox_run/command.stdout", run_dir / "command.stdout", check=True)
     sprite_pull(detonator_sprite, "/tmp/.blastbox_run/command.stderr", run_dir / "command.stderr", check=True)
     readme_ok = sprite_pull(detonator_sprite, "/home/sprite/detonation/README.md", run_dir / "README.md", check=False)

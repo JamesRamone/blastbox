@@ -14,6 +14,7 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -75,6 +76,30 @@ def sync_history_to_sprite(
     history_path: Path = DEFAULT_HISTORY_PATH,
 ) -> dict[str, Any]:
     data = load_or_init_history(history_path, sprite_name=sprite)
+    # Merge the controller's history first so runs recorded by the controller agent
+    # (Slack / PR watcher) since the last sync are kept instead of overwritten.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        remote_path = Path(tmpdir) / "remote_history.json"
+        pulled = _run(
+            [config.SPRITE_BIN, "file", "pull", "-s", sprite, "/home/sprite/blastbox-web/history.json", str(remote_path)],
+            check=False,
+        )
+        remote_runs: list[Any] = []
+        if pulled.returncode == 0 and remote_path.is_file():
+            try:
+                remote = json.loads(remote_path.read_text(encoding="utf-8"))
+                remote_runs = remote.get("runs") or [] if isinstance(remote, dict) else []
+            except json.JSONDecodeError:
+                remote_runs = []
+    merged: dict[str, Any] = {}
+    for run in [*remote_runs, *data["runs"]]:
+        if isinstance(run, dict) and run.get("run_id"):
+            merged[str(run["run_id"])] = run
+    runs = sorted(merged.values(), key=lambda r: str(r.get("timestamp_utc") or ""))
+    data["runs"] = sanitize_value(runs[-config.MAX_HISTORY_RUNS :])
+    if data["runs"]:
+        data["updated_at"] = max(data.get("updated_at") or "", str(data["runs"][-1].get("timestamp_utc") or ""))
+    history_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     _run([config.SPRITE_BIN, "file", "push", "-s", sprite, "-p", str(history_path), "/home/sprite/blastbox-web/history.json"])
     return data
 
