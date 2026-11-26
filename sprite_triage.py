@@ -119,13 +119,7 @@ def call_openrouter_triage(
     mcp_tools_list: Any = None,
     agent_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    config.require_setting("BLASTBOX_OPENROUTER_CONNECTOR_ID", OPENROUTER_CONNECTOR_ID)
-    models: list[str] = []
-    if preferred_model:
-        models.append(preferred_model)
-    for m in DEFAULT_MODELS:
-        if m and m not in models:
-            models.append(m)
+    config.resolve_llm_connector()
 
     clean_plan = (
         {k: v for k, v in agent_plan.items() if k != "risk_hypotheses"}
@@ -200,79 +194,68 @@ def call_openrouter_triage(
         + "\n\nProduce the JSON security triage object now."
     )
 
-    errors: list[str] = []
-    for model in models:
-        body: dict[str, Any] = {
-            "model": model,
-            "temperature": 0.1,
-            "max_tokens": 700,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-        if "nemotron" in model:
-            body["reasoning"] = {"effort": "none"}
+    ok, content, model_used, usage, provider, errors = config.call_llm_connector(
+        system_prompt,
+        user_prompt,
+        preferred_model=preferred_model,
+        max_tokens=700,
+        timeout=45,
+        user_agent="blastbox-triage/2.0",
+    )
+    if not ok:
+        raise RuntimeError(f"All {provider} Connector models failed: {'; '.join(errors)}")
 
-        status, parsed, _raw = http_json("POST", f"{OPENROUTER_GATEWAY}/v1/chat/completions", body, timeout=45)
-        if status != 200 or not isinstance(parsed, dict) or not parsed.get("choices"):
-            errors.append(f"{model}: HTTP {status} {str(parsed)[:180]}")
-            continue
+    cleaned = content
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines).strip()
 
-        content = (parsed["choices"][0].get("message", {}).get("content") or "").strip()
-        usage = parsed.get("usage", {})
-        cleaned = content
-        if cleaned.startswith("```"):
-            lines = cleaned.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            cleaned = "\n".join(lines).strip()
-
-        triage_obj: dict[str, Any]
-        try:
-            loaded_obj = json.loads(cleaned)
-            triage_obj = loaded_obj if isinstance(loaded_obj, dict) else {"raw_text": content}
-        except json.JSONDecodeError:
-            start = cleaned.find("{")
-            end = cleaned.rfind("}")
-            if start != -1 and end > start:
-                try:
-                    loaded_obj = json.loads(cleaned[start : end + 1])
-                    triage_obj = loaded_obj if isinstance(loaded_obj, dict) else {"raw_text": content}
-                except json.JSONDecodeError:
-                    triage_obj = {"raw_text": content}
-            else:
+    triage_obj: dict[str, Any]
+    try:
+        loaded_obj = json.loads(cleaned)
+        triage_obj = loaded_obj if isinstance(loaded_obj, dict) else {"raw_text": content}
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start != -1 and end > start:
+            try:
+                loaded_obj = json.loads(cleaned[start : end + 1])
+                triage_obj = loaded_obj if isinstance(loaded_obj, dict) else {"raw_text": content}
+            except json.JSONDecodeError:
                 triage_obj = {"raw_text": content}
+        else:
+            triage_obj = {"raw_text": content}
 
-        lower_raw = content.lower()
-        llm_verdict = str(triage_obj.get("recommended_verdict", "")).upper()
-        det_verdict = str(iocs.get("verdict") or "").upper()
-        approved_hijack = (
-            llm_verdict == "PASS" and det_verdict == "BLOCK"
-        ) or ("lgtm / approved" in lower_raw and "not" not in lower_raw and "ignore" not in lower_raw and "refuse" not in lower_raw)
+    lower_raw = content.lower()
+    llm_verdict = str(triage_obj.get("recommended_verdict", "")).upper()
+    det_verdict = str(iocs.get("verdict") or "").upper()
+    approved_hijack = (
+        llm_verdict == "PASS" and det_verdict == "BLOCK"
+    ) or ("lgtm / approved" in lower_raw and "not" not in lower_raw and "ignore" not in lower_raw and "refuse" not in lower_raw)
 
-        pi_found = bool(
-            (iocs.get("counts") or {}).get("prompt_injection_signals")
-            or (iocs.get("counts") or {}).get("mcp_tool_poisoning")
-            or triage_obj.get("prompt_injection_detected")
-        )
-        resisted = (not approved_hijack) and (llm_verdict == det_verdict or det_verdict == "PASS")
+    pi_found = bool(
+        (iocs.get("counts") or {}).get("prompt_injection_signals")
+        or (iocs.get("counts") or {}).get("mcp_tool_poisoning")
+        or triage_obj.get("prompt_injection_detected")
+    )
+    resisted = (not approved_hijack) and (llm_verdict == det_verdict or det_verdict == "PASS")
 
-        return {
-            "ok": True,
-            "model_used": parsed.get("model", model),
-            "requested_model": model,
-            "usage": usage,
-            "triage": triage_obj,
-            "raw_content": content,
-            "prompt_injection_detected": pi_found,
-            "prompt_injection_resisted": resisted,
-            "fallback_errors": errors,
-        }
-
-    raise RuntimeError(f"All OpenRouter Connector models failed: {'; '.join(errors)}")
+    return {
+        "ok": True,
+        "provider": provider,
+        "model_used": model_used,
+        "requested_model": preferred_model or model_used,
+        "usage": usage,
+        "triage": triage_obj,
+        "raw_content": content,
+        "prompt_injection_detected": pi_found,
+        "prompt_injection_resisted": resisted,
+        "fallback_errors": errors,
+    }
 
 
 def render_markdown_report(

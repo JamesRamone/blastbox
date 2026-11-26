@@ -85,11 +85,15 @@ DETONATOR_SPRITE = _env_value("BLASTBOX_DETONATOR_SPRITE") or "blastbox-detonato
 
 GITHUB_CONNECTOR_ID = _env_value("BLASTBOX_GITHUB_CONNECTOR_ID")
 OPENROUTER_CONNECTOR_ID = _env_value("BLASTBOX_OPENROUTER_CONNECTOR_ID")
+OPENAI_CONNECTOR_ID = _env_value("BLASTBOX_OPENAI_CONNECTOR_ID")
+ANTHROPIC_CONNECTOR_ID = _env_value("BLASTBOX_ANTHROPIC_CONNECTOR_ID")
 SLACK_CONNECTOR_ID = _env_value("BLASTBOX_SLACK_CONNECTOR_ID")
 SLACK_PROVIDER = _env_value("BLASTBOX_SLACK_PROVIDER", "slack_bot")
 
 GITHUB_GATEWAY = f"https://api.sprites.dev/v1/gateway/github/{GITHUB_CONNECTOR_ID}" if GITHUB_CONNECTOR_ID else ""
 OPENROUTER_GATEWAY = f"https://api.sprites.dev/v1/gateway/openrouter/{OPENROUTER_CONNECTOR_ID}" if OPENROUTER_CONNECTOR_ID else ""
+OPENAI_GATEWAY = f"https://api.sprites.dev/v1/gateway/openai/{OPENAI_CONNECTOR_ID}" if OPENAI_CONNECTOR_ID else ""
+ANTHROPIC_GATEWAY = f"https://api.sprites.dev/v1/gateway/anthropic/{ANTHROPIC_CONNECTOR_ID}" if ANTHROPIC_CONNECTOR_ID else ""
 SLACK_GATEWAY = f"https://api.sprites.dev/v1/gateway/{SLACK_PROVIDER}/{SLACK_CONNECTOR_ID}" if SLACK_CONNECTOR_ID else ""
 
 SLACK_CHANNELS = [
@@ -108,22 +112,183 @@ GOLDEN_CHECKPOINT_COMMENT = "blastbox-detonator-golden"
 POLL_INTERVAL_SECONDS = max(5, int(_env_value("BLASTBOX_POLL_INTERVAL", "30")))
 DETONATION_TIMEOUT_SECONDS = max(5, int(_env_value("BLASTBOX_DETONATION_TIMEOUT", "20")))
 MAX_DETONATOR_CHECKPOINTS = max(2, int(_env_value("BLASTBOX_MAX_CHECKPOINTS", "8")))
+ALLOWED_PR_AUTHORS = {
+    a.strip().lower()
+    for a in _env_value("BLASTBOX_ALLOWED_PR_AUTHORS").split(",")
+    if a.strip()
+}
+MAX_HISTORY_RUNS = max(5, int(_env_value("BLASTBOX_MAX_HISTORY_RUNS", "50")))
+
+LLM_PROVIDER = _env_value("BLASTBOX_LLM_PROVIDER").lower()
+if LLM_PROVIDER == "claude":
+    LLM_PROVIDER = "anthropic"
+if not LLM_PROVIDER:
+    if OPENROUTER_CONNECTOR_ID:
+        LLM_PROVIDER = "openrouter"
+    elif OPENAI_CONNECTOR_ID:
+        LLM_PROVIDER = "openai"
+    elif ANTHROPIC_CONNECTOR_ID:
+        LLM_PROVIDER = "anthropic"
+    else:
+        LLM_PROVIDER = "openrouter"
 
 OPENROUTER_MODEL = (
-    os.environ.get("BLASTBOX_OPENROUTER_MODEL")
+    os.environ.get("BLASTBOX_LLM_MODEL")
+    or os.environ.get("BLASTBOX_OPENROUTER_MODEL")
     or os.environ.get("OPENROUTER_MODEL")
     or "nvidia/nemotron-3.5-lightning:free"
 )
-DEFAULT_MODELS = [
-    OPENROUTER_MODEL,
-    "nvidia/nemotron-3.5-lightning:free",
-    "nvidia/nemotron-3-ultra-550b-a55b:free",
-    "openrouter/free",
-]
+OPENAI_MODEL = os.environ.get("BLASTBOX_LLM_MODEL") or os.environ.get("BLASTBOX_OPENAI_MODEL") or "gpt-4.1-mini"
+ANTHROPIC_MODEL = (
+    os.environ.get("BLASTBOX_LLM_MODEL")
+    or os.environ.get("BLASTBOX_ANTHROPIC_MODEL")
+    or "claude-sonnet-4-20250514"
+)
+
+PROVIDER_DEFAULT_MODELS: dict[str, list[str]] = {
+    "openrouter": [
+        OPENROUTER_MODEL,
+        "nvidia/nemotron-3.5-lightning:free",
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "openrouter/free",
+    ],
+    "openai": [
+        OPENAI_MODEL,
+        "gpt-4.1-mini",
+        "gpt-4o-mini",
+    ],
+    "anthropic": [
+        ANTHROPIC_MODEL,
+        "claude-sonnet-4-20250514",
+        "claude-3-5-haiku-latest",
+    ],
+}
+DEFAULT_MODELS = list(dict.fromkeys(PROVIDER_DEFAULT_MODELS.get(LLM_PROVIDER, PROVIDER_DEFAULT_MODELS["openrouter"])))
+
+
+def resolve_llm_connector() -> tuple[str, str, str, list[str]]:
+    """Return `(provider, connector_id, gateway_url, model_candidates)` for the active LLM Connector."""
+    provider = LLM_PROVIDER
+    if provider == "openai":
+        cid = require_setting("BLASTBOX_OPENAI_CONNECTOR_ID", OPENAI_CONNECTOR_ID)
+        return "openai", cid, OPENAI_GATEWAY, list(dict.fromkeys(PROVIDER_DEFAULT_MODELS["openai"]))
+    if provider == "anthropic":
+        cid = require_setting("BLASTBOX_ANTHROPIC_CONNECTOR_ID", ANTHROPIC_CONNECTOR_ID)
+        return "anthropic", cid, ANTHROPIC_GATEWAY, list(dict.fromkeys(PROVIDER_DEFAULT_MODELS["anthropic"]))
+    if provider == "openrouter":
+        cid = require_setting("BLASTBOX_OPENROUTER_CONNECTOR_ID", OPENROUTER_CONNECTOR_ID)
+        return "openrouter", cid, OPENROUTER_GATEWAY, list(dict.fromkeys(PROVIDER_DEFAULT_MODELS["openrouter"]))
+    raise RuntimeError(f"Unsupported BLASTBOX_LLM_PROVIDER={provider!r} (expected openrouter, openai, or anthropic)")
+
+
+def call_llm_connector(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    preferred_model: str | None = None,
+    max_tokens: int = 700,
+    timeout: int = 40,
+    user_agent: str = "blastbox-llm/2.0",
+) -> tuple[bool, str, str, dict[str, Any], str, list[str]]:
+    """Call OpenRouter, OpenAI, or Anthropic via Fly.io Sprites Connector Gateway.
+
+    Returns `(ok, content, model_used, usage, provider, errors)`.
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    provider, _cid, gateway, default_models = resolve_llm_connector()
+    models: list[str] = []
+    if preferred_model:
+        models.append(preferred_model)
+    for m in default_models:
+        if m and m not in models:
+            models.append(m)
+
+    errors: list[str] = []
+    for model in models:
+        if provider == "anthropic":
+            url = f"{gateway}/v1/messages"
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "anthropic-version": "2023-06-01",
+                "User-Agent": user_agent,
+            }
+            body: dict[str, Any] = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": 0.1,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_prompt}],
+            }
+        else:
+            url = f"{gateway}/v1/chat/completions"
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": user_agent,
+            }
+            body = {
+                "model": model,
+                "temperature": 0.1,
+                "max_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            }
+            if provider == "openrouter" and "nemotron" in model:
+                body["reasoning"] = {"effort": "none"}
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
+            errors.append(f"{provider}/{model}: {str(exc)[:180]}")
+            continue
+
+        if not isinstance(parsed, dict):
+            errors.append(f"{provider}/{model}: non-dict response")
+            continue
+
+        if provider == "anthropic":
+            blocks = parsed.get("content")
+            if not isinstance(blocks, list) or not blocks:
+                errors.append(f"{provider}/{model}: empty content")
+                continue
+            content = "\n".join(
+                str(b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
+            ).strip()
+        else:
+            choices = parsed.get("choices")
+            if not isinstance(choices, list) or not choices:
+                errors.append(f"{provider}/{model}: empty choices")
+                continue
+            content = str((choices[0].get("message") or {}).get("content") or "").strip()
+
+        if not content:
+            errors.append(f"{provider}/{model}: empty text")
+            continue
+
+        usage = parsed.get("usage") if isinstance(parsed.get("usage"), dict) else {}
+        return True, content, str(parsed.get("model") or model), usage, provider, errors
+
+    return False, "", "deterministic-fallback", {}, provider, errors
+
 
 FORBIDDEN_ENV_VARS = (
     "GITHUB_TOKEN",
     "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
     "FLY_API_TOKEN",
     "SPRITES_TOKEN",
     "AWS_SECRET_ACCESS_KEY",

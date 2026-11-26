@@ -39,9 +39,14 @@ import extract_iocs  # noqa: E402
 import init_dashboard  # noqa: E402
 import url_guard  # noqa: E402
 
-PR_URL_RE = re.compile(r"^https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)(?:/.*)?$")
+PR_URL_RE = re.compile(r"^https?://github\.com/([A-Za-z0-9._-]+)/([A-Za-z0-9._-]+)/pull/(\d+)(?:/(?:files|commits|checks)?)?$")
 URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 CHECKPOINT_ID_RE = re.compile(r"\b(v\d+)\b")
+MAX_PR_FILES = 100
+MAX_PR_FILE_BYTES = 512 * 1024
+MAX_PR_TOTAL_BYTES = 5 * 1024 * 1024
+MAX_STRACE_PULL_BYTES = 8 * 1024 * 1024
+MAX_STDIO_PULL_BYTES = 1 * 1024 * 1024
 TRACE_EVENTS = (
     "execve,execveat,open,openat,openat2,creat,connect,sendto,sendmsg,sendmmsg,"
     "socket,unlink,unlinkat,rename,renameat,renameat2,link,linkat,symlink,symlinkat,chmod,fchmodat"
@@ -402,50 +407,70 @@ def _run_pr_fetch_on_controller(
     local_controller: bool,
 ) -> tuple[dict[str, Any], Path]:
     config.require_setting("BLASTBOX_GITHUB_CONNECTOR_ID", config.GITHUB_CONNECTOR_ID)
-    fetch_code = f"""
+    fetch_code = r"""
 import base64, json, sys, urllib.request
 from pathlib import Path
 
-BASE = "{config.GITHUB_GATEWAY}/repos/{owner}/{repo}"
 OUT_BUNDLE = Path(sys.argv[1])
+GATEWAY = sys.argv[2].rstrip("/")
+OWNER = sys.argv[3]
+REPO = sys.argv[4]
+PR_NUMBER = int(sys.argv[5])
+PR_URL = sys.argv[6]
+MAX_FILES = int(sys.argv[7])
+MAX_FILE_BYTES = int(sys.argv[8])
+MAX_TOTAL_BYTES = int(sys.argv[9])
+
+BASE = f"{GATEWAY}/repos/{OWNER}/{REPO}"
 
 def gh_get(path):
-    req = urllib.request.Request(BASE + path, headers={{"Accept": "application/vnd.github+json", "User-Agent": "blastbox-fetch/2.0"}})
+    req = urllib.request.Request(BASE + path, headers={"Accept": "application/vnd.github+json", "User-Agent": "blastbox-fetch/2.0"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.loads(r.read().decode("utf-8"))
 
-pr = gh_get("/pulls/{pr_number}")
+pr = gh_get(f"/pulls/{PR_NUMBER}")
 head_sha = pr["head"]["sha"]
 head_ref = pr["head"]["ref"]
-tree = gh_get(f"/git/trees/{{head_sha}}?recursive=1")
+tree = gh_get(f"/git/trees/{head_sha}?recursive=1")
 
-files = {{}}
-for entry in tree.get("tree", []):
-    if entry.get("type") != "blob":
-        continue
+blobs = [e for e in tree.get("tree", []) if e.get("type") == "blob"]
+if len(blobs) > MAX_FILES:
+    raise ValueError(f"PR tree has {len(blobs)} files, exceeding MAX_PR_FILES={MAX_FILES}")
+
+files = {}
+total_bytes = 0
+for entry in blobs:
     rel = entry["path"]
-    blob = gh_get(f"/git/blobs/{{entry['sha']}}")
+    est_size = int(entry.get("size") or 0)
+    if est_size > MAX_FILE_BYTES:
+        raise ValueError(f"PR file '{rel}' is {est_size} bytes, exceeding MAX_PR_FILE_BYTES={MAX_FILE_BYTES}")
+    blob = gh_get(f"/git/blobs/{entry['sha']}")
     raw = base64.b64decode(blob["content"]) if blob.get("encoding") == "base64" else blob["content"].encode("utf-8")
-    files[rel] = {{
+    if len(raw) > MAX_FILE_BYTES:
+        raise ValueError(f"PR file '{rel}' decoded to {len(raw)} bytes, exceeding MAX_PR_FILE_BYTES={MAX_FILE_BYTES}")
+    total_bytes += len(raw)
+    if total_bytes > MAX_TOTAL_BYTES:
+        raise ValueError(f"PR total size exceeded MAX_PR_TOTAL_BYTES={MAX_TOTAL_BYTES}")
+    files[rel] = {
         "b64": base64.b64encode(raw).decode("ascii"),
         "mode": entry.get("mode", "100644"),
-    }}
+    }
 
-bundle = {{
-    "meta": {{
+bundle = {
+    "meta": {
         "mode": "pr",
-        "pr_url": pr.get("html_url", "{pr_url}"),
-        "owner": "{owner}",
-        "repo": "{repo}",
-        "pr_number": {pr_number},
+        "pr_url": pr.get("html_url", PR_URL),
+        "owner": OWNER,
+        "repo": REPO,
+        "pr_number": PR_NUMBER,
         "title": pr.get("title"),
-        "author": (pr.get("user") or {{}}).get("login"),
+        "author": (pr.get("user") or {}).get("login"),
         "head_ref": head_ref,
         "head_sha": head_sha,
         "files_fetched": sorted(files.keys()),
-    }},
+    },
     "files": files,
-}}
+}
 OUT_BUNDLE.write_text(json.dumps(bundle), encoding="utf-8")
 """
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -456,7 +481,17 @@ OUT_BUNDLE.write_text(json.dumps(bundle), encoding="utf-8")
         _run_controller_python(
             controller_sprite,
             tmp_script,
-            [remote_bundle],
+            [
+                remote_bundle,
+                config.GITHUB_GATEWAY,
+                owner,
+                repo,
+                str(pr_number),
+                pr_url,
+                str(MAX_PR_FILES),
+                str(MAX_PR_FILE_BYTES),
+                str(MAX_PR_TOTAL_BYTES),
+            ],
             local_controller=local_controller,
             download_files=[(remote_bundle, local_bundle)],
         )
@@ -729,7 +764,11 @@ def stage_and_plan_target(
             "cd /home/sprite/detonation && "
             f"timeout 10s strace -f -s 256 -e trace={TRACE_EVENTS} -o /tmp/.blastbox_run/discover.strace "
             "/.sprite/bin/python3 /home/sprite/detonation/.blastbox_mcp_probe.py "
-            "--work-dir /home/sprite/detonation --discover-only --catalog /tmp/.blastbox_run/mcp_catalog.json"
+            "--work-dir /home/sprite/detonation --discover-only --catalog /tmp/.blastbox_run/mcp_catalog.json; "
+            "RC=$?; "
+            f"if [ -f /tmp/.blastbox_run/discover.strace ] && [ $(stat -c%s /tmp/.blastbox_run/discover.strace) -gt {MAX_STRACE_PULL_BYTES} ]; then "
+            f"truncate -s {MAX_STRACE_PULL_BYTES} /tmp/.blastbox_run/discover.strace; fi; "
+            "exit $RC"
         )
         sprite_exec(detonator_sprite, ["bash", "-c", discover_cmd], check=True)
         catalog_local = run_dir / "mcp_catalog.json"
@@ -880,13 +919,37 @@ RC=$?
 /.sprite/bin/python3 - <<'PY' "$RC"
 import json, sys
 from pathlib import Path
+
+max_strace = {MAX_STRACE_PULL_BYTES}
+max_stdio = {MAX_STDIO_PULL_BYTES}
 strace_file = Path("/tmp/.blastbox_run/blastbox.strace")
+orig_strace_bytes = strace_file.stat().st_size if strace_file.exists() else 0
+strace_truncated = False
+if orig_strace_bytes > max_strace:
+    head_len = int(max_strace * 0.75)
+    tail_len = max_strace - head_len
+    with strace_file.open("rb") as fh:
+        head = fh.read(head_len)
+        fh.seek(max(0, orig_strace_bytes - tail_len))
+        tail = fh.read(tail_len)
+    marker = f"\n# [blastbox] strace truncated from {{orig_strace_bytes}} to {{max_strace}} bytes\n".encode("utf-8")
+    strace_file.write_bytes(head + marker + tail)
+    strace_truncated = True
+
+for name in ("command.stdout", "command.stderr"):
+    p = Path("/tmp/.blastbox_run") / name
+    if p.exists() and p.stat().st_size > max_stdio:
+        with p.open("rb") as fh:
+            data = fh.read(max_stdio)
+        p.write_bytes(data + b"\n[blastbox] output truncated\n")
+
 meta = {{
     "mode": {mode!r},
     "skill_block_count": {skill_block_count!r},
     "exit_code": int(sys.argv[1]),
     "timed_out": int(sys.argv[1]) == 124,
-    "strace_bytes": strace_file.stat().st_size if strace_file.exists() else 0,
+    "strace_bytes": orig_strace_bytes,
+    "strace_truncated": strace_truncated,
 }}
 Path("/tmp/.blastbox_run/detonation_meta.json").write_text(json.dumps(meta, indent=2) + "\\n", encoding="utf-8")
 print(json.dumps(meta))
@@ -1233,6 +1296,8 @@ def persist_history_and_verify_dashboard(
         history_path, sprite_name=controller_sprite, public_url=public_url
     )
     history["runs"].append(run_record)
+    if len(history["runs"]) > config.MAX_HISTORY_RUNS:
+        history["runs"] = history["runs"][-config.MAX_HISTORY_RUNS :]
     history["updated_at"] = run_record["timestamp_utc"]
     history = config.sanitize_value(history)
     history_path.write_text(json.dumps(history, indent=2) + "\n", encoding="utf-8")

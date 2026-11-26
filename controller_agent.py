@@ -400,10 +400,12 @@ def run_poll_cycle(
                 if not isinstance(pr, dict):
                     continue
                 head = pr.get("head") if isinstance(pr.get("head"), dict) else {}
+                user = pr.get("user") if isinstance(pr.get("user"), dict) else {}
                 open_prs.append(
                     {
                         "number": pr.get("number"),
                         "title": pr.get("title"),
+                        "author": user.get("login"),
                         "head_ref": head.get("ref"),
                         "head_sha": head.get("sha"),
                         "html_url": pr.get("html_url"),
@@ -517,7 +519,18 @@ def run_poll_cycle(
             pr_num = pr.get("number")
             head_sha = pr.get("head_sha")
             pr_url = pr.get("html_url")
+            pr_author = str(pr.get("author") or "").strip()
             if not pr_num or not head_sha or not pr_url:
+                continue
+            if config.ALLOWED_PR_AUTHORS and pr_author.lower() not in config.ALLOWED_PR_AUTHORS:
+                skip_key = f"skipped:{pr_num}:{head_sha}"
+                if skip_key not in state["audited"]:
+                    print(
+                        f"[blastbox-agent] Skipping PR #{pr_num} from non-allowlisted author '{pr_author or 'unknown'}'",
+                        flush=True,
+                    )
+                    state["audited"][skip_key] = "skipped:author-not-allowlisted"
+                    _write_json_atomic(state_path, state)
                 continue
             key = f"{pr_num}:{head_sha}"
             if key in state["audited"]:

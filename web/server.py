@@ -58,6 +58,8 @@ PORT = int(os.environ.get("PORT", "8080"))
 
 GITHUB_CONNECTOR_ID = _env_val("BLASTBOX_GITHUB_CONNECTOR_ID")
 OPENROUTER_CONNECTOR_ID = _env_val("BLASTBOX_OPENROUTER_CONNECTOR_ID")
+OPENAI_CONNECTOR_ID = _env_val("BLASTBOX_OPENAI_CONNECTOR_ID")
+ANTHROPIC_CONNECTOR_ID = _env_val("BLASTBOX_ANTHROPIC_CONNECTOR_ID")
 SLACK_CONNECTOR_ID = _env_val("BLASTBOX_SLACK_CONNECTOR_ID")
 SLACK_CHANNEL_LABEL = _env_val("BLASTBOX_SLACK_CHANNEL_LABEL", "#blastbox")
 DEFAULT_DETONATOR = _env_val("BLASTBOX_DETONATOR_SPRITE", "blastbox-detonator")
@@ -73,6 +75,8 @@ REPO_FALLBACK_ASSETS: dict[str, Path] = {
 FORBIDDEN_ENV_VARS = (
     "GITHUB_TOKEN",
     "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
     "FLY_API_TOKEN",
     "SPRITES_TOKEN",
     "AWS_SECRET_ACCESS_KEY",
@@ -712,27 +716,27 @@ def render_dashboard_html(
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {{
-      --bg: #FAF8F5;
-      --surface: #FFFFFF;
-      --surface-subtle: #F4F0FA;
-      --surface-hover: #ECE5F6;
-      --topbar-bg: rgba(250, 248, 245, 0.94);
-      --ink: #1E1633;
-      --ink-secondary: #3C3156;
-      --muted: #5A4E75;
-      --border: #DDD4EC;
-      --border-subtle: #EAE3F4;
-      --accent: #6D28D9;
-      --accent-hover: #5B21B6;
-      --block-ink: #B42318;
-      --block-bg: #FEF2F2;
-      --block-border: #F5C2C0;
-      --review-ink: #92400E;
-      --review-bg: #FFFBEB;
-      --review-border: #F5D791;
-      --pass-ink: #0F6B46;
-      --pass-bg: #ECFDF5;
-      --pass-border: #A7E3C6;
+      --bg: #0B0F14;
+      --surface: #11161E;
+      --surface-subtle: #161D27;
+      --surface-hover: #1C2532;
+      --topbar-bg: rgba(11, 15, 20, 0.92);
+      --ink: #E6EDF3;
+      --ink-secondary: #B4C0CE;
+      --muted: #7D8B9D;
+      --border: #263140;
+      --border-subtle: #1D2633;
+      --accent: #948FE0;
+      --accent-hover: #ABA7EB;
+      --block-ink: #FCA5A5;
+      --block-bg: rgba(239, 68, 68, 0.14);
+      --block-border: rgba(248, 113, 113, 0.35);
+      --review-ink: #FCD34D;
+      --review-bg: rgba(245, 158, 11, 0.14);
+      --review-border: rgba(251, 191, 36, 0.35);
+      --pass-ink: #6EE7B7;
+      --pass-bg: rgba(16, 185, 129, 0.14);
+      --pass-border: rgba(52, 211, 153, 0.35);
       --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       --text-heading: 1.25rem;
@@ -1427,7 +1431,7 @@ def render_dashboard_html(
       border: 1px solid var(--border);
     }}
     .arch-figure-media {{
-      background: #FAF8F5;
+      background: var(--surface-subtle);
       border-right: 1px solid var(--border-subtle);
       display: flex;
       align-items: center;
@@ -2212,6 +2216,8 @@ class BlastboxHandler(BaseHTTPRequestHandler):
                 "connectors": {
                     "github": bool(GITHUB_CONNECTOR_ID),
                     "openrouter": bool(OPENROUTER_CONNECTOR_ID),
+                    "openai": bool(OPENAI_CONNECTOR_ID),
+                    "anthropic": bool(ANTHROPIC_CONNECTOR_ID),
                     "slack_bot": bool(SLACK_CONNECTOR_ID),
                 },
                 "updated_at": history.get("updated_at"),

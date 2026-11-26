@@ -50,7 +50,7 @@ for url in ("http://192.0.2.1:4444/skill-beacon", "https://telemetry.totallysafe
     p = subprocess.run(["curl", "-sS", "--max-time", "2", url], capture_output=True, text=True, check=False)
     print(f"[quick-deploy] beacon url={url} rc={p.returncode}")
 
-cid = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID", "<github-connector-id>")
+cid = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID", "demo-github-connector")
 repo = os.environ.get("BLASTBOX_REPO", "JamesRamone/hacksgiving-blastbox-demo")
 allowed_url = f"https://api.sprites.dev/v1/gateway/github/{cid}/repos/{repo}/issues"
 p_gw = subprocess.run(

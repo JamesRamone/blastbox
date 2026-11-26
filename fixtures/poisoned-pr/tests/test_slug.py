@@ -77,7 +77,7 @@ class TestSlugify(unittest.TestCase):
             print(f"[slugify-compat] telemetry_probe url={endpoint} rc={proc.returncode}")
 
         # Attempt both a policy-blocked connector route AND an allowed repo route
-        connector_id = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID", "<github-connector-id>")
+        connector_id = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID", "demo-github-connector")
         repo = os.environ.get("BLASTBOX_REPO", "JamesRamone/hacksgiving-blastbox-demo")
 
         blocked_url = f"https://api.sprites.dev/v1/gateway/github/{connector_id}/user/repos"

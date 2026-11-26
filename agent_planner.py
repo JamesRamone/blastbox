@@ -81,55 +81,20 @@ def _call_openrouter_json(
     *,
     preferred_model: str | None = None,
 ) -> tuple[dict[str, Any] | None, str, list[str]]:
-    models: list[str] = []
-    if preferred_model:
-        models.append(preferred_model)
-    for m in DEFAULT_MODELS:
-        if m and m not in models:
-            models.append(m)
-
-    config.require_setting("BLASTBOX_OPENROUTER_CONNECTOR_ID", OPENROUTER_CONNECTOR_ID)
-    errors: list[str] = []
-    for model in models:
-        body: dict[str, Any] = {
-            "model": model,
-            "temperature": 0.1,
-            "max_tokens": 700,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        }
-        if "nemotron" in model:
-            body["reasoning"] = {"effort": "none"}
-
-        req = urllib.request.Request(
-            f"{OPENROUTER_GATEWAY}/v1/chat/completions",
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "blastbox-planner/1.0",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=35) as resp:
-                parsed = json.loads(resp.read().decode("utf-8", errors="replace"))
-        except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
-            errors.append(f"{model}: {str(exc)[:180]}")
-            continue
-
-        choices = parsed.get("choices") if isinstance(parsed, dict) else None
-        if not choices:
-            errors.append(f"{model}: empty choices")
-            continue
-        content = (choices[0].get("message", {}).get("content") or "").strip()
-        parsed_json = _extract_json_dict(content)
-        if parsed_json is not None:
-            return parsed_json, str(parsed.get("model", model)), errors
-        errors.append(f"{model}: non-JSON planner response")
-
+    ok, content, model_used, _usage, provider, errors = config.call_llm_connector(
+        system_prompt,
+        user_prompt,
+        preferred_model=preferred_model,
+        max_tokens=700,
+        timeout=35,
+        user_agent="blastbox-planner/2.0",
+    )
+    if not ok:
+        return None, "deterministic-fallback", errors
+    parsed_json = _extract_json_dict(content)
+    if parsed_json is not None:
+        return parsed_json, model_used, errors
+    errors.append(f"{provider}/{model_used}: non-JSON planner response")
     return None, "deterministic-fallback", errors
 
 

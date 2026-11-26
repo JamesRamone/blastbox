@@ -19,7 +19,7 @@ from typing import Any
 import config
 
 SLACK_LINK_RE = re.compile(r"<(https?://[^|>]+)(?:\|[^>]+)?>")
-PR_URL_RE = re.compile(r"^https?://github\.com/[^/]+/[^/]+/pull/\d+(?:/.*)?$")
+PR_URL_RE = re.compile(r"^https?://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+(?:/(?:files|commits|checks)?)?$")
 
 
 class SlackRateLimitError(RuntimeError):

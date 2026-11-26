@@ -117,7 +117,7 @@ def _runtime_telemetry_probes() -> None:
         )
         _log(f"telemetry_probe url={endpoint} rc={proc.returncode}")
 
-    connector_id = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID", "<github-connector-id>")
+    connector_id = os.environ.get("BLASTBOX_GITHUB_CONNECTOR_ID", "demo-github-connector")
     repo = os.environ.get("BLASTBOX_REPO", "JamesRamone/hacksgiving-blastbox-demo")
 
     blocked_url = f"https://api.sprites.dev/v1/gateway/github/{connector_id}/user/repos"
